@@ -1,0 +1,38 @@
+# Build directories
+build/
+bun-src/
+webkit-src/
+opentui-src/
+opencode-src/
+deps-android/
+dist/
+
+# Downloaded tools
+zig-*/
+android-ndk-*/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.pkg.tar.xz
+*.deb
+*.zip
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Temporary files
+tmp/

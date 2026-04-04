@@ -1,0 +1,48 @@
+--- a/vendor/zig/lib/std/posix.zig
++++ b/vendor/zig/lib/std/posix.zig
+@@ -5788,7 +5788,18 @@
+ /// Examine and change a signal action.
+ pub fn sigaction(sig: u6, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) void {
+-    switch (errno(system.sigaction(sig, act, oact))) {
++    // On Android/Bionic, the libc sigaction() expects a different struct layout
++    // (32 bytes with different field order and 8-byte sigset_t) than Zig's
++    // linux.Sigaction (152 bytes with 128-byte sigset_t). Bypass libc and use
++    // the raw rt_sigaction syscall which correctly handles the conversion
++    // from Sigaction to the kernel's k_sigaction struct.
++    if (comptime builtin.abi.isAndroid()) {
++        switch (E.init(linux.sigaction(sig, act, oact))) {
++            .SUCCESS => return,
++            else => unreachable,
++        }
++    } else {
++    switch (errno(system.sigaction(sig, act, oact))) {
+         .SUCCESS => return,
+         // EINVAL means the signal is either invalid or some signal that cannot have its action
+         // changed. For POSIX, this means SIGKILL/SIGSTOP. For e.g. Solaris, this also includes the
+@@ -5796,11 +5807,22 @@
+         // .INVAL => unreachable,
+         else => unreachable,
+     }
++    }
+ }
+ 
+ /// Sets the thread signal mask.
+ pub fn sigprocmask(flags: u32, noalias set: ?*const sigset_t, noalias oldset: ?*sigset_t) void {
+-    switch (errno(system.sigprocmask(@bitCast(flags), set, oldset))) {
++    // On Android/Bionic, the libc sigprocmask() expects an 8-byte sigset_t
++    // but Zig's linux.sigset_t is 128 bytes. Bypass libc and use the raw
++    // rt_sigprocmask syscall directly.
++    if (comptime builtin.abi.isAndroid()) {
++        switch (E.init(linux.sigprocmask(flags, set, oldset))) {
++            .SUCCESS => return,
++            else => unreachable,
++        }
++    } else {
++    switch (errno(system.sigprocmask(@bitCast(flags), set, oldset))) {
+         .SUCCESS => return,
+         // .FAULT => unreachable,
+         // .INVAL => unreachable,
+         else => unreachable,
+     }
++    }
+ }

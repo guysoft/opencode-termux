@@ -1,0 +1,297 @@
+name: Build OpenCode for Android/Termux
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      opencode_version:
+        description: 'OpenCode version to build'
+        required: false
+        default: '1.3.13'
+
+env:
+  BUN_VERSION: "1.2.13"
+  OPENCODE_VERSION: "1.3.13"
+  ANDROID_API: "24"
+  ANDROID_NDK_VERSION: "28.1.13356709"
+  WEBKIT_COMMIT: "017930ebf915121f8f593bef61cbbca82d78132d"
+  ICU_VERSION: "75.1"
+  ZIG_VERSION: "0.15.2"
+  # golem10 has 15GB RAM — limit parallelism to avoid OOM during WebKit link
+  JOBS: "4"
+  # Use the large spindle drive for working directory
+  WORK_DIR: "/mnt/spindrive/opencode-build"
+
+jobs:
+  build:
+    name: Build Android aarch64
+    runs-on: self-hosted
+    timeout-minutes: 360  # 6 hours for full build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Override OpenCode version from input
+        if: github.event.inputs.opencode_version
+        run: echo "OPENCODE_VERSION=${{ github.event.inputs.opencode_version }}" >> $GITHUB_ENV
+
+      - name: Create work directory
+        run: |
+          mkdir -p "$WORK_DIR"
+          echo "Work directory: $WORK_DIR"
+          df -h /mnt/spindrive
+
+      # =============================================
+      # Install build dependencies
+      # =============================================
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build python3 ruby perl \
+            git curl wget unzip xz-utils zip \
+            build-essential pkg-config \
+            libxml2-dev libxslt1-dev \
+            golang-go \
+            autoconf automake libtool
+
+      - name: Install Android NDK r28b
+        run: |
+          NDK_DIR="/opt/android-ndk"
+          if [ -d "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+            echo "NDK already installed at $NDK_DIR"
+          else
+            echo "Downloading Android NDK r28b..."
+            cd /tmp
+            wget -q "https://dl.google.com/android/repository/android-ndk-r28b-linux.zip" -O ndk.zip
+            sudo mkdir -p /opt
+            sudo unzip -q ndk.zip -d /opt/
+            sudo mv /opt/android-ndk-r28b "$NDK_DIR"
+            rm ndk.zip
+          fi
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> $GITHUB_ENV
+          echo "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: Install Rust with Android target
+        run: |
+          if ! command -v rustup &>/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+            source "$HOME/.cargo/env"
+          fi
+          rustup target add aarch64-linux-android
+
+      - name: Install Zig 0.15.2
+        run: |
+          ZIG_DIR="$WORK_DIR/zig-${ZIG_VERSION}"
+          if [ -x "$ZIG_DIR/zig" ]; then
+            echo "Zig already installed at $ZIG_DIR"
+          else
+            echo "Downloading Zig ${ZIG_VERSION}..."
+            cd /tmp
+            wget -q "https://ziglang.org/builds/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
+            mkdir -p "$ZIG_DIR"
+            tar xf zig.tar.xz -C "$ZIG_DIR" --strip-components=1
+            rm zig.tar.xz
+          fi
+          echo "ZIG_BIN=$ZIG_DIR/zig" >> $GITHUB_ENV
+          echo "$ZIG_DIR" >> $GITHUB_PATH
+
+      - name: Install Bun (host)
+        run: |
+          if ! command -v bun &>/dev/null; then
+            curl -fsSL https://bun.sh/install | bash
+            echo "$HOME/.bun/bin" >> $GITHUB_PATH
+          fi
+          bun --version
+
+      # =============================================
+      # Cache expensive build artifacts
+      # =============================================
+      - name: Compute patch hashes
+        id: hashes
+        run: |
+          BUN_PATCH_HASH=$(sha256sum patches/bun/android-support.patch | cut -c1-16)
+          WEBKIT_PATCH_HASH=$(sha256sum patches/webkit/android-support.patch | cut -c1-16)
+          ZIG_PATCH_HASH=$(sha256sum patches/zig/posix-android-sigaction.patch | cut -c1-16)
+          echo "bun_patch_hash=$BUN_PATCH_HASH" >> $GITHUB_OUTPUT
+          echo "webkit_patch_hash=$WEBKIT_PATCH_HASH" >> $GITHUB_OUTPUT
+          echo "zig_patch_hash=$ZIG_PATCH_HASH" >> $GITHUB_OUTPUT
+
+      - name: Cache ICU build
+        id: cache-icu
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WORK_DIR }}/deps-android/prefix
+          key: icu-android-${{ env.ICU_VERSION }}-${{ env.ANDROID_API }}
+
+      - name: Cache WebKit build
+        id: cache-webkit
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WORK_DIR }}/webkit-android
+          key: webkit-android-${{ env.WEBKIT_COMMIT }}-${{ steps.hashes.outputs.webkit_patch_hash }}
+
+      - name: Cache Bun binary
+        id: cache-bun
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WORK_DIR }}/bun-build/bun
+          key: bun-android-${{ env.BUN_VERSION }}-${{ steps.hashes.outputs.bun_patch_hash }}-${{ steps.hashes.outputs.zig_patch_hash }}
+
+      # =============================================
+      # Clone and patch sources
+      # =============================================
+      - name: Clone and patch Bun + WebKit
+        if: steps.cache-bun.outputs.cache-hit != 'true' || steps.cache-webkit.outputs.cache-hit != 'true'
+        run: |
+          source scripts/env.sh
+          ./scripts/apply-patches.sh
+
+      # =============================================
+      # Build ICU
+      # =============================================
+      - name: Build ICU 75.1
+        if: steps.cache-icu.outputs.cache-hit != 'true'
+        run: |
+          source scripts/env.sh
+          ./scripts/build-icu.sh
+
+      # =============================================
+      # Build WebKit/JSC
+      # =============================================
+      - name: Build WebKit/JSC
+        if: steps.cache-webkit.outputs.cache-hit != 'true'
+        run: |
+          source scripts/env.sh
+          ./scripts/build-webkit.sh
+
+      # =============================================
+      # Build Bun
+      # =============================================
+      - name: Build Bun
+        if: steps.cache-bun.outputs.cache-hit != 'true'
+        run: |
+          source scripts/env.sh
+          # Need to clone + patch if only bun cache missed but webkit didn't
+          if [ ! -d "$BUN_SRC/.git" ]; then
+            ./scripts/apply-patches.sh
+          fi
+          ./scripts/build-bun.sh
+
+      - name: Verify Bun binary
+        run: |
+          BUN_BINARY="${WORK_DIR}/bun-build/bun"
+          echo "Bun binary: $BUN_BINARY"
+          ls -lh "$BUN_BINARY"
+          file "$BUN_BINARY"
+          readelf -h "$BUN_BINARY" | grep -E "Machine|Class"
+
+      # =============================================
+      # Build libopentui.so
+      # =============================================
+      - name: Build libopentui.so
+        run: |
+          source scripts/env.sh
+          ./scripts/build-opentui.sh
+
+      # =============================================
+      # Build OpenCode standalone binary
+      # =============================================
+      - name: Build OpenCode standalone binary
+        run: |
+          source scripts/env.sh
+          ./scripts/build-opencode.sh
+
+      - name: Verify OpenCode binary
+        run: |
+          OPENCODE_BINARY="${WORK_DIR}/dist/opencode"
+          echo "OpenCode binary: $OPENCODE_BINARY"
+          ls -lh "$OPENCODE_BINARY"
+          file "$OPENCODE_BINARY"
+          readelf -h "$OPENCODE_BINARY" | grep -E "Machine|Class"
+
+      # =============================================
+      # Create packages
+      # =============================================
+      - name: Create distribution packages
+        run: |
+          source scripts/env.sh
+          ./scripts/make-packages.sh
+
+      - name: List packages
+        run: |
+          echo "=== Built packages ==="
+          ls -lh "${WORK_DIR}/packages/"
+
+      # =============================================
+      # Upload artifacts
+      # =============================================
+      - name: Upload packages as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-termux-${{ env.OPENCODE_VERSION }}
+          path: |
+            ${{ env.WORK_DIR }}/packages/*.zip
+            ${{ env.WORK_DIR }}/packages/*.pkg.tar.xz
+            ${{ env.WORK_DIR }}/packages/*.deb
+
+      # =============================================
+      # Release (only on tag push)
+      # =============================================
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.WORK_DIR }}/packages/*.zip
+            ${{ env.WORK_DIR }}/packages/*.pkg.tar.xz
+            ${{ env.WORK_DIR }}/packages/*.deb
+          body: |
+            ## OpenCode ${{ env.OPENCODE_VERSION }} for Android/Termux (aarch64)
+
+            ### Installation
+
+            **Termux (pacman):**
+            ```bash
+            # Download the .pkg.tar.xz file, then:
+            pacman -U opencode-${{ env.OPENCODE_VERSION }}-1-aarch64.pkg.tar.xz
+            ```
+
+            **Termux (dpkg):**
+            ```bash
+            # Download the .deb file, then:
+            dpkg -i opencode_${{ env.OPENCODE_VERSION }}_aarch64.deb
+            ```
+
+            **Standalone binary:**
+            ```bash
+            # Download and extract the .zip, then:
+            chmod +x opencode
+            mv opencode $PREFIX/bin/
+            ```
+
+            ### Build info
+            - Bun: v${{ env.BUN_VERSION }} (cross-compiled for Android aarch64)
+            - WebKit/JSC: ${{ env.WEBKIT_COMMIT }}
+            - ICU: ${{ env.ICU_VERSION }}
+            - Android API level: ${{ env.ANDROID_API }}
+            - NDK: r28b (${{ env.ANDROID_NDK_VERSION }})
+          draft: false
+          prerelease: false
+
+      # =============================================
+      # Cleanup (keep cache, remove intermediates)
+      # =============================================
+      - name: Cleanup intermediate files
+        if: always()
+        run: |
+          # Remove source trees (they can be re-cloned) but keep cached artifacts
+          rm -rf "${WORK_DIR}/bun-src" "${WORK_DIR}/webkit-src" "${WORK_DIR}/opentui-src" "${WORK_DIR}/opencode-src"
+          rm -rf "${WORK_DIR}/icu-src" "${WORK_DIR}/icu-host-build" "${WORK_DIR}/icu-android-build"
+          rm -rf "${WORK_DIR}/webkit-build"
+          echo "Cleaned up intermediate files"
+          df -h /mnt/spindrive
