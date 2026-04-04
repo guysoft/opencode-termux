@@ -322,5 +322,9 @@ jobs:
           rm -rf "${WORK_DIR}/bun-src" "${WORK_DIR}/webkit-src" "${WORK_DIR}/opentui-src" "${WORK_DIR}/opencode-src"
           rm -rf "${WORK_DIR}/icu-src" "${WORK_DIR}/icu-host-build" "${WORK_DIR}/icu-android-build"
           rm -rf "${WORK_DIR}/webkit-build"
+          # Clear Zig cache when bun-src is removed — the cache references files
+          # in vendor/zig/ which lives inside bun-src. Stale references cause
+          # FileNotFound errors in the translate-c output cache.
+          rm -rf "${WORK_DIR}/bun-build/cache/zig"
           echo "Cleaned up intermediate files"
           df -h /mnt/spindrive
