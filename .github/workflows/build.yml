@@ -17,6 +17,7 @@ env:
   ANDROID_API: "24"
   ANDROID_NDK_VERSION: "28.1.13356709"
   WEBKIT_COMMIT: "017930ebf915121f8f593bef61cbbca82d78132d"
+  TINYCC_COMMIT: "b91835d8701523e895a2b447713630069514e291"
   ICU_VERSION: "75.1"
   ZIG_VERSION: "0.15.2"
   # golem10 has 15GB RAM — limit parallelism to avoid OOM during WebKit link
@@ -187,6 +188,15 @@ jobs:
         run: |
           source scripts/env.sh
           ./scripts/build-webkit.sh
+
+      # =============================================
+      # Build TinyCC (libtcc.a)
+      # =============================================
+      - name: Build TinyCC
+        if: steps.cache-bun.outputs.cache-hit != 'true'
+        run: |
+          source scripts/env.sh
+          ./scripts/build-tinycc.sh
 
       # =============================================
       # Build Bun
