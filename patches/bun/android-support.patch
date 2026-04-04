@@ -247,7 +247,7 @@ index 412cb06..5e701d7 100644
 +  endif()
 +endif()
 diff --git a/cmake/targets/BuildBun.cmake b/cmake/targets/BuildBun.cmake
-index c960084..1883527 100644
+index c960084..7cff614 100644
 --- a/cmake/targets/BuildBun.cmake
 +++ b/cmake/targets/BuildBun.cmake
 @@ -537,6 +537,9 @@ endif()
@@ -329,7 +329,15 @@ index c960084..1883527 100644
    if(DEBUG)
      # TODO: this shouldn't be necessary long term
      if (NOT ABI STREQUAL "musl")
-@@ -937,54 +975,78 @@ if(APPLE)
+@@ -880,6 +918,7 @@ if(NOT WIN32)
+       -Werror=sometimes-uninitialized
+       -Wno-c++23-lambda-attributes
+       -Wno-nullability-completeness
++      -Wno-undefined-var-template
+       -Werror
+     )
+     
+@@ -937,54 +976,78 @@ if(APPLE)
  endif()
  
  if(LINUX)
@@ -450,7 +458,7 @@ index c960084..1883527 100644
  endif()
  
  # --- Symbols list ---
-@@ -1059,7 +1121,23 @@ set(BUN_DEPENDENCIES
+@@ -1059,7 +1122,23 @@ set(BUN_DEPENDENCIES
    LolHtml
    Lshpack
    Mimalloc
@@ -475,7 +483,7 @@ index c960084..1883527 100644
    Zlib
    LibArchive # must be loaded after zlib
    Zstd
-@@ -1092,22 +1170,33 @@ else()
+@@ -1092,22 +1171,33 @@ else()
  endif()
  
  if(LINUX)
@@ -522,7 +530,7 @@ index c960084..1883527 100644
    endif()
  endif()
  
-@@ -1173,7 +1262,7 @@ if(NOT BUN_CPP_ONLY)
+@@ -1173,7 +1263,7 @@ if(NOT BUN_CPP_ONLY)
    set(TEST_BUN_COMMAND_BASE ${BUILD_PATH}/${bunExe} --revision)
    set(TEST_BUN_COMMAND_ENV_WRAP
      ${CMAKE_COMMAND} -E env BUN_DEBUG_QUIET_LOGS=1)
@@ -531,7 +539,7 @@ index c960084..1883527 100644
      set(TEST_BUN_COMMAND
        ${TEST_BUN_COMMAND_ENV_WRAP} setarch ${CMAKE_HOST_SYSTEM_PROCESSOR} -R ${TEST_BUN_COMMAND_BASE}
        || ${TEST_BUN_COMMAND_ENV_WRAP} ${TEST_BUN_COMMAND_BASE})
-@@ -1244,7 +1333,9 @@ if(NOT BUN_CPP_ONLY)
+@@ -1244,7 +1334,9 @@ if(NOT BUN_CPP_ONLY)
  
    if(CI)
      set(bunTriplet bun-${OS}-${ARCH})
