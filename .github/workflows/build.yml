@@ -92,7 +92,7 @@ jobs:
           else
             echo "Downloading Zig ${ZIG_VERSION}..."
             cd /tmp
-            wget -q "https://ziglang.org/builds/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
+            wget -q "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -O zig.tar.xz
             mkdir -p "$ZIG_DIR"
             tar xf zig.tar.xz -C "$ZIG_DIR" --strip-components=1
             rm zig.tar.xz
