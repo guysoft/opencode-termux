@@ -33,18 +33,25 @@ if [ ! -d "$WEBKIT_OUTPUT/lib" ]; then
     exit 1
 fi
 
-# Clear stale Zig cache to avoid FileNotFound errors from previous runs.
-# The Zig build system caches translate-c output by content hash. If the
-# source tree (vendor/zig) was deleted between runs but the cache dir persists,
-# the cache graph references stale hashes that no longer exist.
-if [ -d "$BUN_BUILD/cache/zig" ]; then
-    echo ">>> Clearing stale Zig cache..."
-    rm -rf "$BUN_BUILD/cache/zig"
-fi
-# Also clear any .zig-cache in the source tree
-if [ -d "$BUN_SRC/.zig-cache" ]; then
-    rm -rf "$BUN_SRC/.zig-cache"
-fi
+# Zig cache directory setup.
+#
+# Zig uses two cache locations:
+#   1. --cache-dir (explicit): $BUN_BUILD/cache/zig/local (set by CMake)
+#   2. .zig-cache (implicit): $BUN_SRC/.zig-cache (Zig's default CWD-local cache)
+#
+# On successful builds, Zig hardlinks files between them. The translate-c step
+# writes c-headers-for-zig.zig to one location, and build-obj looks it up from
+# the other. If they're separate directories and one is missing/stale, we get
+# "file_hash FileNotFound" errors.
+#
+# Fix: Symlink .zig-cache -> the explicit cache dir so both paths resolve to
+# the same physical location. Clear both first to avoid stale entries.
+echo ">>> Setting up Zig cache directories..."
+rm -rf "$BUN_BUILD/cache/zig" "$BUN_SRC/.zig-cache"
+mkdir -p "$BUN_BUILD/cache/zig/local"
+mkdir -p "$BUN_BUILD/cache/zig/global"
+ln -sfn "$BUN_BUILD/cache/zig/local" "$BUN_SRC/.zig-cache"
+echo "    Symlinked $BUN_SRC/.zig-cache -> $BUN_BUILD/cache/zig/local"
 
 # Create build directory
 mkdir -p "$BUN_BUILD"
@@ -110,6 +117,7 @@ fi
 
 # Build
 echo ">>> Building Bun (this will take 30-45 minutes)..."
+echo "    .zig-cache -> $(readlink -f "$BUN_SRC/.zig-cache" 2>/dev/null || echo 'NOT A SYMLINK')"
 cd "$BUN_BUILD"
 ninja -j"$JOBS" 2>&1 || {
     echo ""
@@ -124,8 +132,9 @@ ninja -j"$JOBS" 2>&1 || {
             exit 1
         }
         echo "    Zig patch applied. Clearing Zig cache and rebuilding..."
-        rm -rf "$BUN_BUILD/cache/zig"
-        rm -rf "$BUN_SRC/.zig-cache"
+        rm -rf "$BUN_BUILD/cache/zig" "$BUN_SRC/.zig-cache"
+        mkdir -p "$BUN_BUILD/cache/zig/local" "$BUN_BUILD/cache/zig/global"
+        ln -sfn "$BUN_BUILD/cache/zig/local" "$BUN_SRC/.zig-cache"
         cd "$BUN_BUILD"
         ninja -j"$JOBS"
     else
