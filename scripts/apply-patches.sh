@@ -36,10 +36,12 @@ echo "    Bun patches applied successfully"
 # --- Clone WebKit ---
 if [ ! -d "$WEBKIT_SRC/.git" ]; then
     echo ">>> Cloning WebKit at commit ${WEBKIT_COMMIT}..."
-    git clone --depth 1 https://github.com/AAAstorga/WebKit.git "$WEBKIT_SRC"
+    mkdir -p "$WEBKIT_SRC"
     cd "$WEBKIT_SRC"
-    git fetch origin "${WEBKIT_COMMIT}" --depth=1
-    git checkout "${WEBKIT_COMMIT}"
+    git init
+    git remote add origin https://github.com/oven-sh/WebKit.git
+    git fetch --depth=1 origin "${WEBKIT_COMMIT}"
+    git checkout FETCH_HEAD
 else
     echo ">>> WebKit source already exists at $WEBKIT_SRC"
 fi
