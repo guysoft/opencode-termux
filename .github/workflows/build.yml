@@ -51,12 +51,30 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake ninja-build python3 ruby perl \
+            ninja-build python3 ruby perl \
             git curl wget unzip xz-utils zip \
             build-essential pkg-config \
             libxml2-dev libxslt1-dev \
             golang-go \
             autoconf automake libtool
+
+      - name: Install CMake 3.28+
+        run: |
+          # Ubuntu 22.04 ships CMake 3.22 but Bun needs 3.24+
+          CMAKE_VER="3.28.6"
+          if cmake --version 2>/dev/null | grep -q "3\.2[89]\|3\.[3-9]"; then
+            echo "CMake already new enough: $(cmake --version | head -1)"
+          else
+            echo "Installing CMake ${CMAKE_VER}..."
+            cd /tmp
+            wget -q "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VER}/cmake-${CMAKE_VER}-linux-x86_64.tar.gz" -O cmake.tar.gz
+            sudo tar xzf cmake.tar.gz -C /opt/
+            sudo ln -sf "/opt/cmake-${CMAKE_VER}-linux-x86_64/bin/cmake" /usr/local/bin/cmake
+            sudo ln -sf "/opt/cmake-${CMAKE_VER}-linux-x86_64/bin/ctest" /usr/local/bin/ctest
+            sudo ln -sf "/opt/cmake-${CMAKE_VER}-linux-x86_64/bin/cpack" /usr/local/bin/cpack
+            rm cmake.tar.gz
+          fi
+          cmake --version
 
       - name: Install Android NDK r28b
         run: |
