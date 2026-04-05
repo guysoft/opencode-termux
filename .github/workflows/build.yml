@@ -119,14 +119,23 @@ jobs:
           echo "ZIG_BIN=$ZIG_DIR/zig" >> $GITHUB_ENV
           echo "$ZIG_DIR" >> $GITHUB_PATH
 
-      - name: Install Bun (host)
+      - name: Install Bun (host, pinned to match target)
         run: |
-          if ! command -v bun &>/dev/null; then
-            curl -fsSL https://bun.sh/install | bash
+          # CRITICAL: The host Bun version MUST match BUN_VERSION (the target).
+          # The standalone binary's module graph format changes between Bun versions
+          # (e.g. CompiledModuleGraphFile stride is 36 bytes in 1.2.x but 52 bytes
+          # in 1.3.x). If the host Bun that creates the standalone uses a newer
+          # format than the target Bun can parse, the binary will OOM on startup.
+          WANT="$BUN_VERSION"
+          GOT="$(bun --version 2>/dev/null || true)"
+          if [ "$GOT" != "$WANT" ]; then
+            echo "Installing Bun v${WANT} (current: ${GOT:-none})..."
+            curl -fsSL https://bun.sh/install | bash -s "bun-v${WANT}"
             echo "$HOME/.bun/bin" >> $GITHUB_PATH
             export PATH="$HOME/.bun/bin:$PATH"
           fi
-          bun --version
+          echo "Host Bun version: $(bun --version)"
+          echo "Target Bun version: $WANT"
 
       # =============================================
       # Cache expensive build artifacts
