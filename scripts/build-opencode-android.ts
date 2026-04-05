@@ -36,12 +36,29 @@ console.log(`Building OpenCode v${VERSION} (channel: ${CHANNEL}) for Android aar
 // Step 1: Generate models-snapshot.js
 console.log("\n=== Step 1: Generating models-snapshot.js ===")
 const modelsUrl = process.env.OPENCODE_MODELS_URL || "https://models.dev"
-let modelsData: string
+let modelsData: string = ""
 if (process.env.MODELS_DEV_API_JSON) {
   modelsData = await Bun.file(process.env.MODELS_DEV_API_JSON).text()
 } else {
   console.log(`Fetching from ${modelsUrl}/api.json ...`)
-  modelsData = await fetch(`${modelsUrl}/api.json`).then((x) => x.text())
+  let fetchErr: Error | null = null
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(`${modelsUrl}/api.json`, { signal: AbortSignal.timeout(15000) })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      modelsData = await resp.text()
+      fetchErr = null
+      break
+    } catch (err: any) {
+      fetchErr = err
+      console.error(`  Attempt ${attempt}/3 failed: ${err.message}`)
+      if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt))
+    }
+  }
+  if (fetchErr) {
+    console.error(`ERROR: Failed to fetch models after 3 attempts: ${fetchErr.message}`)
+    process.exit(1)
+  }
 }
 await Bun.write(
   path.join(OPENCODE_DIR, "src/provider/models-snapshot.js"),
@@ -154,83 +171,64 @@ console.log("\n=== Step 4: Extracting module graph ===")
 const hostBinary = await Bun.file(hostBinaryPath).arrayBuffer()
 const hostBytes = new Uint8Array(hostBinary)
 
-// The standalone format for ELF:
-// [bun binary] [module graph bytes] [8 bytes: total_byte_count as u64 LE]
-// The module graph bytes end with the trailer "\n---- Bun! ----\n"
+// Standalone binary format (ELF):
+//   [bun binary (seek_pos bytes)]
+//   [module_graph bytes]
+//   [total_byte_count as u64 LE (8 bytes)]
+//
+// Module graph internal layout:
+//   [string data] [module list] [offsets (32 bytes)] [trailer "\n---- Bun! ----\n" (16 bytes)]
+//
+// offsets.byte_count = len(string_data) + len(module_list)
+// total_byte_count = seek_pos + len(module_graph) + 8 = file_size
+//
+// We derive the module graph size from the trailer and offsets struct,
+// WITHOUT relying on process.execPath (which may differ from the bun
+// binary that was embedded during --compile).
 
-// Read the last 8 bytes to get total_byte_count
-const totalByteCountView = new DataView(hostBinary, hostBytes.length - 8, 8)
-// Read as little-endian u64 (we'll use Number since JS BigInt is needed for full u64)
-const totalByteCountLow = totalByteCountView.getUint32(0, true)
-const totalByteCountHigh = totalByteCountView.getUint32(4, true)
-const totalByteCount = totalByteCountLow + totalByteCountHigh * 0x100000000
+const TRAILER_STR = "\n---- Bun! ----\n"
+const TRAILER_LEN = TRAILER_STR.length  // 16
+const OFFSETS_SIZE_CONST = 32
 
-console.log(`Host binary size: ${hostBytes.length}`)
-console.log(`Total byte count (from trailer): ${totalByteCount}`)
+// Find trailer: it's near the end of the file, just before the final 8-byte u64.
+// Search backwards from (end - 8) for the trailer sentinel.
+const trailerBuf = Buffer.from(TRAILER_STR)
+const searchBuf = Buffer.from(hostBytes.buffer, hostBytes.byteOffset, hostBytes.length)
+const trailerEnd = hostBytes.length - 8  // trailer must end here
+const expectedTrailerStart = trailerEnd - TRAILER_LEN
 
-// total_byte_count = bun_seek_position + module_graph.length + 8
-// bun_seek_position is where the module graph starts (= size of bun binary)
-// So module_graph.length = total_byte_count - bun_seek_position - 8
-// And bun_seek_position = hostBytes.length - module_graph.length - 8
-// So: bun_seek_position = totalByteCount - module_graph.length - 8... circular
+// Verify trailer at expected position
+const foundTrailer = searchBuf.compare(
+  trailerBuf, 0, TRAILER_LEN,
+  expectedTrailerStart, trailerEnd
+) === 0
 
-// Actually, from the code:
-// seek_position = fstat.size of the bun copy (the original bun size)
-// total_byte_count = seek_position + bytes.len + 8
-// So: bytes.len = total_byte_count - seek_position - 8
-// And the file is: [bun copy (seek_position bytes)] [module graph (bytes.len bytes)] [8 bytes total_byte_count]
-// So file size = seek_position + bytes.len + 8 = total_byte_count
-// Wait, that means total_byte_count == file size? Let me re-check...
-// 
-// From the code:
-//   total_byte_count = seek_position + bytes.len + 8;
-//   write(bytes)
-//   write(&total_byte_count)  // 8 bytes
-// So the final file size = seek_position + bytes.len + 8 = total_byte_count
-// BUT wait, seek_position is the fstat.size BEFORE writing, and the file was copied from bun
-// So seek_position = original bun size
-// And the final file = [bun(seek_position)] [module_graph(bytes.len)] [total_byte_count(8)]
-// File size = seek_position + bytes.len + 8 = total_byte_count
-
-// So totalByteCount should equal hostBytes.length
-if (totalByteCount !== hostBytes.length) {
-  console.error(`ERROR: total_byte_count (${totalByteCount}) != file size (${hostBytes.length})`)
-  console.error("This is unexpected. The standalone binary format may have changed.")
+if (!foundTrailer) {
+  console.error("ERROR: Bun standalone trailer not found at expected position")
+  console.error("       The standalone binary format may have changed.")
   process.exit(1)
 }
 
-// To find the module graph start, we need to know the host bun size
-// The host bun binary is at /usr/local/bin/bun or wherever bun is installed
-const hostBunPath = process.execPath
-const hostBunSize = fs.statSync(hostBunPath).size
-console.log(`Host bun (${hostBunPath}) size: ${hostBunSize}`)
+// Read offsets struct (32 bytes) just before the trailer
+const offsetsStart = expectedTrailerStart - OFFSETS_SIZE_CONST
+const offsetsByteCount = Number(searchBuf.readBigUInt64LE(offsetsStart))
+
+// Module graph total size = byte_count (string data + module list) + offsets(32) + trailer(16)
+const moduleGraphSize = offsetsByteCount + OFFSETS_SIZE_CONST + TRAILER_LEN
+const hostBunSize = hostBytes.length - 8 - moduleGraphSize
+
+console.log(`Host standalone size: ${hostBytes.length}`)
+console.log(`Derived host bun size: ${hostBunSize}`)
+console.log(`Module graph size: ${moduleGraphSize}`)
+
+if (hostBunSize <= 0) {
+  console.error(`ERROR: Derived host bun size is ${hostBunSize} — something is wrong`)
+  process.exit(1)
+}
 
 const moduleGraphBytes = hostBytes.slice(hostBunSize, hostBytes.length - 8)
-console.log(`Module graph size: ${moduleGraphBytes.length}`)
-
-// Verify trailer
-const trailerStr = "\n---- Bun! ----\n"
-const trailerBytes = new TextEncoder().encode(trailerStr)
-const possibleTrailer = moduleGraphBytes.slice(moduleGraphBytes.length - trailerBytes.length)
-const trailerMatch = trailerBytes.every((b, i) => b === possibleTrailer[i])
-console.log(`Trailer found: ${trailerMatch}`)
-
-if (!trailerMatch) {
-  // Try to find the trailer in the binary
-  const trailerBuf = Buffer.from(trailerStr)
-  let trailerPos = -1
-  for (let i = hostBytes.length - 100; i >= hostBytes.length - 10000; i--) {
-    if (hostBytes[i] === 0x0a && Buffer.compare(trailerBuf, Buffer.from(hostBytes.slice(i, i + trailerBuf.length))) === 0) {
-      trailerPos = i
-      break
-    }
-  }
-  if (trailerPos >= 0) {
-    console.log(`Found trailer at offset ${trailerPos}`)
-    console.log(`Bun binary appears to be ${trailerPos - moduleGraphBytes.length + hostBunSize} bytes`)
-  }
-  console.error("WARNING: Trailer mismatch. Proceeding anyway...")
-}
+console.log(`Module graph extracted: ${moduleGraphBytes.length} bytes`)
+console.log(`Trailer verified: OK`)
 
 // Step 5: Patch the module graph for Android
 console.log("\n=== Step 5: Patching module graph for Android ===")
@@ -264,27 +262,27 @@ console.log("\n=== Step 5: Patching module graph for Android ===")
 //   module_format:   u8  (1)
 //   padding:         u8  (1)
 
-const trailer = "\n---- Bun! ----\n"
-const trailerBuf = Buffer.from(trailer)
+const mgTrailer = "\n---- Bun! ----\n"
+const mgTrailerBuf = Buffer.from(mgTrailer)
 const OFFSETS_SIZE = 32
 const STRIDE = 36
 
 // Parse the module graph
 const mgBuf = Buffer.from(moduleGraphBytes)
-const trailerPosInMg = mgBuf.lastIndexOf(trailerBuf)
+const trailerPosInMg = mgBuf.lastIndexOf(mgTrailerBuf)
 if (trailerPosInMg < 0) throw new Error("Trailer not found in module graph!")
 
 // Offsets struct is just before the trailer
-const offsetsStart = trailerPosInMg - OFFSETS_SIZE
-const byteCount = Number(mgBuf.readBigUInt64LE(offsetsStart))  // points to start of Offsets struct
-const modOff = mgBuf.readUInt32LE(offsetsStart + 8)
-const modLen = mgBuf.readUInt32LE(offsetsStart + 12)
-const entryId = mgBuf.readUInt32LE(offsetsStart + 16)
-const argvOff = mgBuf.readUInt32LE(offsetsStart + 20)
-const argvLen = mgBuf.readUInt32LE(offsetsStart + 24)
-const flags = mgBuf.readUInt32LE(offsetsStart + 28)
+const mgOffsetsStart = trailerPosInMg - OFFSETS_SIZE
+const byteCount = Number(mgBuf.readBigUInt64LE(mgOffsetsStart))  // points to start of Offsets struct
+const modOff = mgBuf.readUInt32LE(mgOffsetsStart + 8)
+const modLen = mgBuf.readUInt32LE(mgOffsetsStart + 12)
+const entryId = mgBuf.readUInt32LE(mgOffsetsStart + 16)
+const argvOff = mgBuf.readUInt32LE(mgOffsetsStart + 20)
+const argvLen = mgBuf.readUInt32LE(mgOffsetsStart + 24)
+const flags = mgBuf.readUInt32LE(mgOffsetsStart + 28)
 
-console.log(`Module graph: trailer at ${trailerPosInMg}, offsets at ${offsetsStart}`)
+console.log(`Module graph: trailer at ${trailerPosInMg}, offsets at ${mgOffsetsStart}`)
 console.log(`byte_count=${byteCount}, modules_ptr=(${modOff},${modLen}), entry_id=${entryId}`)
 
 const nModules = modLen / STRIDE
@@ -447,7 +445,7 @@ if (arm64PtyBytes && libPtyModule) {
   newOffsets.writeUInt32LE(argvLen, 24)
   newOffsets.writeUInt32LE(flags, 28)
 
-  const patchedMg = Buffer.concat([...strDataParts, patchedModList2, newOffsets, trailerBuf])
+  const patchedMg = Buffer.concat([...strDataParts, patchedModList2, newOffsets, mgTrailerBuf])
   console.log(`Original module graph: ${moduleGraphBytes.length} bytes`)
   console.log(`Patched module graph:  ${patchedMg.length} bytes`)
 
@@ -467,7 +465,7 @@ if (arm64PtyBytes && libPtyModule) {
   newOffsets.writeUInt32LE(argvLen, 24)
   newOffsets.writeUInt32LE(flags, 28)
 
-  const patchedMg = Buffer.concat([strDataOnly, patchedModList, newOffsets, trailerBuf])
+  const patchedMg = Buffer.concat([strDataOnly, patchedModList, newOffsets, mgTrailerBuf])
   console.log(`Original module graph: ${moduleGraphBytes.length} bytes`)
   console.log(`Patched module graph:  ${patchedMg.length} bytes`)
 

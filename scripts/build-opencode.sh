@@ -47,8 +47,8 @@ if [ ! -f "$ANDROID_BUN" ]; then
 fi
 
 # Find ARM64 libopentui.so
-OPENTUI_ZIG_DIR="$OPENTUI_SRC/packages/core/src/zig"
-ARM64_LIBOPENTUI="$OPENTUI_ZIG_DIR/lib/aarch64-linux-android/libopentui.so"
+# build.zig installs to ../lib/{target} relative to the zig dir
+ARM64_LIBOPENTUI="$OPENTUI_SRC/packages/core/src/lib/aarch64-linux-android/libopentui.so"
 if [ ! -f "$ARM64_LIBOPENTUI" ]; then
     echo "ERROR: ARM64 libopentui.so not found at $ARM64_LIBOPENTUI"
     echo "       Run scripts/build-opentui.sh first."
@@ -87,18 +87,23 @@ fi
 # Create dist directory
 mkdir -p "$DIST_DIR"
 
-# Update the build script paths
-BUILD_SCRIPT="$REPO_ROOT/scripts/build-opencode-android.ts"
-
 # Run the TypeScript build script
+# Copy it into the OpenCode tree so Bun can resolve @opentui/solid/bun-plugin
+# from node_modules (Bun resolves bare imports relative to the script file's location)
 echo ">>> Building OpenCode standalone binary..."
+BUILD_SCRIPT="$REPO_ROOT/scripts/build-opencode-android.ts"
+BUILD_SCRIPT_LOCAL="$OPENCODE_PKG/build-opencode-android.ts"
+cp "$BUILD_SCRIPT" "$BUILD_SCRIPT_LOCAL"
 cd "$OPENCODE_PKG"
 
 OPENCODE_VERSION="$OPENCODE_VERSION" \
     ANDROID_BUN="$ANDROID_BUN" \
     OUTPUT_DIR="$DIST_DIR" \
     OPENCODE_DIR="$OPENCODE_PKG" \
-    "$HOST_BUN" run "$BUILD_SCRIPT"
+    "$HOST_BUN" run "$BUILD_SCRIPT_LOCAL"
+
+# Clean up copied script
+rm -f "$BUILD_SCRIPT_LOCAL"
 
 # Restore original libopentui.so
 if [ -n "$BACKUP_FILE" ] && [ -f "$BACKUP_FILE" ]; then

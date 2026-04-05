@@ -106,7 +106,7 @@ cd "$DEB_STAGING/DEBIAN"
 tar czf "$DEB_STAGING/control.tar.gz" control
 echo "2.0" > "$DEB_STAGING/debian-binary"
 cd "$DEB_STAGING"
-ar rcs "$PKG_DIR/$DEB_NAME" debian-binary control.tar.gz data.tar.gz
+ar rc "$PKG_DIR/$DEB_NAME" debian-binary control.tar.gz data.tar.gz
 echo "    Created $DEB_NAME"
 
 # ==========================================
