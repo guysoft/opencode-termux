@@ -1,0 +1,34 @@
+diff --git a/packages/core/src/zig/build.zig b/packages/core/src/zig/build.zig
+index 5a8bcb8..b1d4642 100644
+--- a/packages/core/src/zig/build.zig
++++ b/packages/core/src/zig/build.zig
+@@ -273,6 +273,29 @@ fn buildTarget(
+         .linkage = .dynamic,
+     });
+ 
++    // On Android, the .so must have NEEDED libc.so so dlopen can resolve
++    // symbols like getauxval. Zig doesn't bundle Android libc, so we directly
++    // add the NDK sysroot's libc.so stub as a link input.
++    const os_tag = target.result.os.tag;
++    const abi = target.result.abi;
++    if (os_tag == .linux and (abi == .android or abi == .androideabi)) {
++        const ndk_lib: ?[]const u8 = blk: {
++            if (std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK_LIB_DIR") catch null) |dir| {
++                break :blk dir;
++            }
++            if (std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK_HOME") catch null) |ndk_home| {
++                break :blk std.fmt.allocPrint(b.allocator, "{s}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/24", .{ndk_home}) catch null;
++            }
++            break :blk null;
++        };
++        if (ndk_lib) |dir| {
++            // Use addObjectFile to directly link the libc.so stub without triggering
++            // Zig's native libc provision
++            const libc_path = std.fmt.allocPrint(b.allocator, "{s}/libc.so", .{dir}) catch unreachable;
++            lib.addObjectFile(.{ .cwd_relative = libc_path });
++        }
++    }
++
+     const install_dir = b.addInstallArtifact(lib, .{
+         .dest_dir = .{
+             .override = .{

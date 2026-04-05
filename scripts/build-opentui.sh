@@ -24,6 +24,21 @@ else
     echo ">>> opentui source exists at $OPENTUI_SRC"
 fi
 
+# Apply Android libc linking patch
+# Without this patch, the .so won't have NEEDED: libc.so, and Android's
+# dlopen() will fail because it can't resolve symbols like getauxval.
+OPENTUI_PATCH="$REPO_ROOT/patches/opentui/android-libc-link.patch"
+if [ -f "$OPENTUI_PATCH" ]; then
+    echo ">>> Applying opentui Android patch..."
+    cd "$OPENTUI_SRC"
+    if ! git apply --check "$OPENTUI_PATCH" 2>/dev/null; then
+        echo "    Patch already applied or does not apply cleanly, skipping"
+    else
+        git apply "$OPENTUI_PATCH"
+        echo "    Patch applied successfully"
+    fi
+fi
+
 OPENTUI_ZIG_DIR="$OPENTUI_SRC/packages/core/src/zig"
 
 if [ ! -f "$OPENTUI_ZIG_DIR/build.zig" ]; then
@@ -56,3 +71,14 @@ echo "=== libopentui.so build complete ==="
 echo "Output: $LIBOPENTUI"
 echo "Size: $(du -h "$LIBOPENTUI" | cut -f1)"
 file "$LIBOPENTUI"
+
+# Verify the .so has NEEDED: libc.so (required for Android dlopen)
+if readelf -d "$LIBOPENTUI" 2>/dev/null | grep -q "NEEDED.*libc.so"; then
+    echo "OK: libopentui.so has NEEDED: libc.so (required for Android)"
+else
+    echo "ERROR: libopentui.so is missing NEEDED: libc.so dependency"
+    echo "       Android dlopen() will fail without this."
+    echo "       Ensure ANDROID_NDK_HOME is set and the opentui patch was applied."
+    readelf -d "$LIBOPENTUI" 2>/dev/null | grep NEEDED || echo "       (no NEEDED entries found)"
+    exit 1
+fi

@@ -33,6 +33,7 @@ opencode-termux/
     bun/android-support.patch      # 33 files, Bun Android/aarch64 support
     webkit/android-support.patch   # 5 files, WebKit/JSC Android fixes
     zig/posix-android-sigaction.patch  # Zig stdlib sigaction/sigprocmask fix
+    opentui/android-libc-link.patch  # Link NDK libc.so for Android dlopen
   scripts/
     apply-patches.sh               # Clone upstream repos + apply patches
     build-icu.sh                   # Cross-compile ICU 75.1 for Android
