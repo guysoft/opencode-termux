@@ -235,11 +235,11 @@ console.log("\n=== Step 5: Patching module graph for Android ===")
 
 // The module graph format (from StandaloneModuleGraph.zig):
 //   [string data: all file names, contents, sourcemaps, bytecodes concatenated]
-//   [CompiledModuleGraphFile array: stride=36 bytes each]
+//   [CompiledModuleGraphFile array]
 //   [Offsets struct: 32 bytes]
 //   [trailer: "\n---- Bun! ----\n"]
 //
-// Offsets struct layout (32 bytes, little-endian):
+// Offsets struct layout (32 bytes, little-endian, unchanged across Bun versions):
 //   byte_count:              u64  (8 bytes) - size of everything before the Offsets struct
 //   modules_ptr.offset:      u32  (4 bytes)
 //   modules_ptr.length:      u32  (4 bytes)
@@ -248,33 +248,26 @@ console.log("\n=== Step 5: Patching module graph for Android ===")
 //   compile_exec_argv.length:u32  (4 bytes)
 //   flags:                   u32  (4 bytes)
 //
-// CompiledModuleGraphFile layout (36 bytes):
-//   name.offset:     u32 (4)
-//   name.length:     u32 (4)
-//   contents.offset: u32 (4)
-//   contents.length: u32 (4)
-//   sourcemap.offset:u32 (4)
-//   sourcemap.length:u32 (4)
-//   bytecode.offset: u32 (4)
-//   bytecode.length: u32 (4)
-//   encoding:        u8  (1)
-//   loader:          u8  (1)
-//   module_format:   u8  (1)
-//   padding:         u8  (1)
+// NOTE: CompiledModuleGraphFile layout varies between Bun versions:
+//   - Bun 1.2.x: 36 bytes (4 StringPointers + 3 u8 + 1 padding)
+//   - Bun 1.3.x: 52 bytes (6 StringPointers + 4 u8)
+// We avoid parsing individual modules. The undici patch is a same-size
+// in-place byte replacement in the raw string data, so we don't need to
+// know the module struct layout at all. The module list and offsets are
+// passed through unchanged.
 
 const mgTrailer = "\n---- Bun! ----\n"
 const mgTrailerBuf = Buffer.from(mgTrailer)
 const OFFSETS_SIZE = 32
-const STRIDE = 36
 
-// Parse the module graph
+// Parse the module graph — only the Offsets struct (version-independent)
 const mgBuf = Buffer.from(moduleGraphBytes)
 const trailerPosInMg = mgBuf.lastIndexOf(mgTrailerBuf)
 if (trailerPosInMg < 0) throw new Error("Trailer not found in module graph!")
 
 // Offsets struct is just before the trailer
 const mgOffsetsStart = trailerPosInMg - OFFSETS_SIZE
-const byteCount = Number(mgBuf.readBigUInt64LE(mgOffsetsStart))  // points to start of Offsets struct
+const byteCount = Number(mgBuf.readBigUInt64LE(mgOffsetsStart))
 const modOff = mgBuf.readUInt32LE(mgOffsetsStart + 8)
 const modLen = mgBuf.readUInt32LE(mgOffsetsStart + 12)
 const entryId = mgBuf.readUInt32LE(mgOffsetsStart + 16)
@@ -284,193 +277,43 @@ const flags = mgBuf.readUInt32LE(mgOffsetsStart + 28)
 
 console.log(`Module graph: trailer at ${trailerPosInMg}, offsets at ${mgOffsetsStart}`)
 console.log(`byte_count=${byteCount}, modules_ptr=(${modOff},${modLen}), entry_id=${entryId}`)
+console.log(`String data region: [0, ${modOff}), Module list: [${modOff}, ${modOff + modLen})`)
 
-const nModules = modLen / STRIDE
-console.log(`Number of modules: ${nModules}`)
-
-// Parse all module entries
-interface ModEntry {
-  nameOff: number; nameLen: number
-  contOff: number; contLen: number
-  smOff: number; smLen: number
-  bcOff: number; bcLen: number
-  encoding: number; loader: number; moduleFormat: number; padding: number
-  name: string
-}
-
-const modules: ModEntry[] = []
-for (let i = 0; i < nModules; i++) {
-  const base = modOff + i * STRIDE
-  const nameOff = mgBuf.readUInt32LE(base + 0)
-  const nameLen = mgBuf.readUInt32LE(base + 4)
-  const contOff = mgBuf.readUInt32LE(base + 8)
-  const contLen = mgBuf.readUInt32LE(base + 12)
-  const smOff = mgBuf.readUInt32LE(base + 16)
-  const smLen = mgBuf.readUInt32LE(base + 20)
-  const bcOff = mgBuf.readUInt32LE(base + 24)
-  const bcLen = mgBuf.readUInt32LE(base + 28)
-  const encoding = mgBuf.readUInt8(base + 32)
-  const loader = mgBuf.readUInt8(base + 33)
-  const moduleFormat = mgBuf.readUInt8(base + 34)
-  const padding = mgBuf.readUInt8(base + 35)
-  const name = mgBuf.slice(nameOff, nameOff + nameLen).toString("utf8").replace(/\0$/, "")
-  modules.push({ nameOff, nameLen, contOff, contLen, smOff, smLen, bcOff, bcLen, encoding, loader, moduleFormat, padding, name })
-  console.log(`  [${i}] ${name} cont=(${contOff},${contLen})`)
-}
-
-// ---- Patch 1: Fix undici reference in ALL modules ----
-// Host bun v1.3.2 bundler compiles `import "undici"` as a bare global reference `undici`.
-// Android bun v1.2.13 doesn't expose globalThis.undici, but it does expose `Undici` (capital U,
-// the moduleExports object). `__reExport` skips the "default" key anyway, so the result is identical.
-// Same-byte-count replacement: no offset adjustments needed.
-// NOTE: This pattern appears in BOTH index.js AND worker.js (separate entry points).
+// ---- Patch 1: Fix undici reference ----
+// The host bun bundler compiles `import "undici"` as a bare global reference `undici`.
+// Android bun v1.2.13 doesn't expose globalThis.undici, but it does expose `Undici`
+// (capital U, the moduleExports object). `__reExport` skips the "default" key anyway,
+// so the result is identical.
+//
+// This is a same-byte-count replacement: we search the entire string data region
+// for the pattern and replace in-place. No module struct parsing required.
 const UNDICI_SEARCH  = Buffer.from('__reExport(exports_Undici, undici)')
 const UNDICI_REPLACE = Buffer.from('__reExport(exports_Undici, Undici)')
-console.log(`\nPatch 1: Replacing undici->Undici in ALL modules (same size, no offset changes)`)
+console.log(`\nPatch 1: Replacing undici->Undici in string data (same size, no offset changes)`)
 
 let undiciPatchCount = 0
-for (let i = 0; i < nModules; i++) {
-  const mod = modules[i]
-  const modSlice = mgBuf.slice(mod.contOff, mod.contOff + mod.contLen)
-  let searchPos = 0
-  while (true) {
-    const pos = modSlice.indexOf(UNDICI_SEARCH, searchPos)
-    if (pos < 0) break
-    console.log(`  Found in [${i}] ${mod.name} at content offset ${pos}, replacing...`)
-    UNDICI_REPLACE.copy(mgBuf, mod.contOff + pos)
-    undiciPatchCount++
-    searchPos = pos + UNDICI_SEARCH.length
-  }
+let searchPos = 0
+// Search only within the string data region [0, modOff)
+const strDataRegion = mgBuf.slice(0, modOff)
+while (true) {
+  const pos = strDataRegion.indexOf(UNDICI_SEARCH, searchPos)
+  if (pos < 0) break
+  console.log(`  Found at string data offset ${pos}, replacing...`)
+  UNDICI_REPLACE.copy(mgBuf, pos)
+  undiciPatchCount++
+  searchPos = pos + UNDICI_SEARCH.length
 }
 if (undiciPatchCount === 0) {
-  console.error("WARNING: __reExport(exports_Undici, undici) not found in any module — skipping Patch 1")
+  console.error("WARNING: __reExport(exports_Undici, undici) not found — skipping Patch 1")
 } else {
-  console.log(`  Patched ${undiciPatchCount} occurrence(s) across all modules`)
+  console.log(`  Patched ${undiciPatchCount} occurrence(s)`)
 }
 
-// No size change — module list and offsets are identical (no adjustment needed)
-const patchedModList = Buffer.alloc(modLen)
-for (let i = 0; i < nModules; i++) {
-  const m = modules[i]
-  const base = i * STRIDE
-  patchedModList.writeUInt32LE(m.nameOff, base + 0)
-  patchedModList.writeUInt32LE(m.nameLen, base + 4)
-  patchedModList.writeUInt32LE(m.contOff, base + 8)
-  patchedModList.writeUInt32LE(m.contLen, base + 12)
-  patchedModList.writeUInt32LE(m.smOff, base + 16)
-  patchedModList.writeUInt32LE(m.smLen, base + 20)
-  patchedModList.writeUInt32LE(m.bcOff, base + 24)
-  patchedModList.writeUInt32LE(m.bcLen, base + 28)
-  patchedModList.writeUInt8(m.encoding, base + 32)
-  patchedModList.writeUInt8(m.loader, base + 33)
-  patchedModList.writeUInt8(m.moduleFormat, base + 34)
-  patchedModList.writeUInt8(m.padding, base + 35)
-}
-
-// ---- Patch 2: Replace x86_64 librust_pty with ARM64 version ----
-const libPtyModule = modules.find(m => m.name.includes("librust_pty") && !m.name.includes("arm64"))
-// ARM64 librust_pty is optional — if present, it replaces the x86_64 version in the module graph
-const ARM64_LIBRUST_PTY = process.env.ARM64_LIBRUST_PTY || path.join(OPENCODE_DIR, "../../node_modules/.bun/bun-pty@0.4.8/node_modules/bun-pty/rust-pty/target/release/librust_pty_arm64.so")
-let arm64PtyBytes: Buffer | null = null
-if (libPtyModule && fs.existsSync(ARM64_LIBRUST_PTY)) {
-  arm64PtyBytes = Buffer.from(await Bun.file(ARM64_LIBRUST_PTY).arrayBuffer())
-  console.log(`\nPatch 2: Replacing ${libPtyModule.name} (x86_64, ${libPtyModule.contLen} bytes) with ARM64 version (${arm64PtyBytes.length} bytes)`)
-} else if (!libPtyModule) {
-  console.log("\nPatch 2: No x86_64 librust_pty found in module graph, skipping")
-} else {
-  console.log("\nPatch 2: ARM64 librust_pty not found at expected path, skipping")
-}
-
-// Build the new module graph.
-// Patch 1 (undici) was an in-place same-size edit — mgBuf already contains the fix.
-// Patch 2 (librust_pty) replaces a variable-size region — requires offset adjustments.
-let strDataParts: Buffer[]
-if (arm64PtyBytes && libPtyModule) {
-  // The original string data region [0, modOff) contains:
-  //   [0, libPtyContOff)   = string data before PTY
-  //   [libPtyContOff, libPtyEnd) = original PTY SO (replaced)
-  //   [libPtyEnd, modOff) = string data after PTY
-  //
-  // Patch 2: replace pty SO in place (size may change → ptySizeDelta).
-  // All StringPointer offsets >= libPtyContEnd shift by ptySizeDelta.
-  // Patch 1 (undici) was a same-size in-place edit → no offset adjustments from it.
-
-  const libPtyContOff = libPtyModule.contOff
-  const libPtyContEnd = libPtyContOff + libPtyModule.contLen
-  const ptySizeDelta = arm64PtyBytes.length - libPtyModule.contLen
-  console.log(`  PTY size delta: ${ptySizeDelta} bytes`)
-
-  strDataParts = [
-    mgBuf.slice(0, libPtyContOff),
-    arm64PtyBytes,
-    mgBuf.slice(libPtyContEnd, modOff),
-  ]
-
-  // Fix up module list for PTY size change
-  const patchedModList2 = Buffer.alloc(modLen)
-  for (let i = 0; i < nModules; i++) {
-    const m = modules[i]
-    const base = i * STRIDE
-
-    // Any offset >= libPtyContEnd shifts by ptySizeDelta
-    const adjPty = (off: number) => off >= libPtyContEnd ? off + ptySizeDelta : off
-
-    patchedModList2.writeUInt32LE(adjPty(m.nameOff), base + 0)
-    patchedModList2.writeUInt32LE(m.nameLen, base + 4)
-    patchedModList2.writeUInt32LE(adjPty(m.contOff), base + 8)
-    // For libPtyModule: update contLen to new size
-    patchedModList2.writeUInt32LE(m === libPtyModule ? arm64PtyBytes!.length : m.contLen, base + 12)
-    patchedModList2.writeUInt32LE(adjPty(m.smOff), base + 16)
-    patchedModList2.writeUInt32LE(m.smLen, base + 20)
-    patchedModList2.writeUInt32LE(adjPty(m.bcOff), base + 24)
-    patchedModList2.writeUInt32LE(m.bcLen, base + 28)
-    patchedModList2.writeUInt8(m.encoding, base + 32)
-    patchedModList2.writeUInt8(m.loader, base + 33)
-    patchedModList2.writeUInt8(m.moduleFormat, base + 34)
-    patchedModList2.writeUInt8(m.padding, base + 35)
-  }
-
-  const newStrDataSize = strDataParts.reduce((s, b) => s + b.length, 0)
-  const newModOff = newStrDataSize
-
-  const adjustArgvOff = (off: number) => off >= libPtyContEnd ? off + ptySizeDelta : off
-  const newOffsetsByteCount = newModOff + patchedModList2.length
-
-  const newOffsets = Buffer.alloc(OFFSETS_SIZE)
-  newOffsets.writeBigUInt64LE(BigInt(newOffsetsByteCount), 0)
-  newOffsets.writeUInt32LE(newModOff, 8)
-  newOffsets.writeUInt32LE(modLen, 12)
-  newOffsets.writeUInt32LE(entryId, 16)
-  newOffsets.writeUInt32LE(adjustArgvOff(argvOff), 20)
-  newOffsets.writeUInt32LE(argvLen, 24)
-  newOffsets.writeUInt32LE(flags, 28)
-
-  const patchedMg = Buffer.concat([...strDataParts, patchedModList2, newOffsets, mgTrailerBuf])
-  console.log(`Original module graph: ${moduleGraphBytes.length} bytes`)
-  console.log(`Patched module graph:  ${patchedMg.length} bytes`)
-
-  var finalModuleGraph = patchedMg
-} else {
-  // No PTY patch — undici was already patched in-place; module graph size unchanged.
-  // Rebuild from mgBuf (which has the in-place undici edit) with original offsets.
-  const strDataOnly = mgBuf.slice(0, modOff)
-  const newOffsetsByteCount = modOff + patchedModList.length
-
-  const newOffsets = Buffer.alloc(OFFSETS_SIZE)
-  newOffsets.writeBigUInt64LE(BigInt(newOffsetsByteCount), 0)
-  newOffsets.writeUInt32LE(modOff, 8)
-  newOffsets.writeUInt32LE(modLen, 12)
-  newOffsets.writeUInt32LE(entryId, 16)
-  newOffsets.writeUInt32LE(argvOff, 20)
-  newOffsets.writeUInt32LE(argvLen, 24)
-  newOffsets.writeUInt32LE(flags, 28)
-
-  const patchedMg = Buffer.concat([strDataOnly, patchedModList, newOffsets, mgTrailerBuf])
-  console.log(`Original module graph: ${moduleGraphBytes.length} bytes`)
-  console.log(`Patched module graph:  ${patchedMg.length} bytes`)
-
-  var finalModuleGraph = patchedMg
-}
+// Since all patches are same-size in-place edits, the module graph is unchanged
+// in structure. We just pass through the entire mgBuf (with our in-place edits)
+// as the final module graph.
+var finalModuleGraph = mgBuf.slice(0, trailerPosInMg + mgTrailerBuf.length)
+console.log(`Module graph size: ${finalModuleGraph.length} bytes (unchanged)`)
 
 // Step 6: Create Android standalone binary
 console.log("\n=== Step 6: Creating Android standalone binary ===")
