@@ -247,7 +247,7 @@ index 412cb06..5e701d7 100644
 +  endif()
 +endif()
 diff --git a/cmake/targets/BuildBun.cmake b/cmake/targets/BuildBun.cmake
-index c960084..4671612 100644
+index c960084..aa591ff 100644
 --- a/cmake/targets/BuildBun.cmake
 +++ b/cmake/targets/BuildBun.cmake
 @@ -537,6 +537,9 @@ endif()
@@ -564,6 +564,18 @@ index c960084..4671612 100644
        set(bunTriplet ${bunTriplet}-musl)
      endif()
      if(ENABLE_BASELINE)
+@@ -1256,7 +1352,10 @@ if(NOT BUN_CPP_ONLY)
+     else()
+       string(REPLACE bun ${bunTriplet} bunPath ${bun})
+     endif()
+-    set(bunFiles ${bunExe} features.json)
++    set(bunFiles ${bunExe})
++    if(NOT ANDROID)
++      list(APPEND bunFiles features.json)
++    endif()
+     if(WIN32)
+       list(APPEND bunFiles ${bun}.pdb)
+     elseif(APPLE)
 diff --git a/cmake/targets/BuildLolHtml.cmake b/cmake/targets/BuildLolHtml.cmake
 index c9d9d24..2df0e9b 100644
 --- a/cmake/targets/BuildLolHtml.cmake
