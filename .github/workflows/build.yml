@@ -119,23 +119,27 @@ jobs:
           echo "ZIG_BIN=$ZIG_DIR/zig" >> $GITHUB_ENV
           echo "$ZIG_DIR" >> $GITHUB_PATH
 
-      - name: Install Bun (host, pinned to match target)
+      - name: Install Bun (host, pinned for module graph compatibility)
         run: |
-          # CRITICAL: The host Bun version MUST match BUN_VERSION (the target).
-          # The standalone binary's module graph format changes between Bun versions
-          # (e.g. CompiledModuleGraphFile stride is 36 bytes in 1.2.x but 52 bytes
-          # in 1.3.x). If the host Bun that creates the standalone uses a newer
-          # format than the target Bun can parse, the binary will OOM on startup.
-          WANT="$BUN_VERSION"
+          # CRITICAL: The host Bun version must produce a module graph format
+          # compatible with the target Bun (v1.2.13).
+          #
+          # The standalone binary's CompiledModuleGraphFile struct changed:
+          #   - Bun <= 1.3.2:  36-byte stride (compatible with 1.2.x target)
+          #   - Bun >= 1.3.11: 52-byte stride (INCOMPATIBLE — causes OOM)
+          #
+          # We can't use 1.2.13 as host because it lacks catalog: workspace
+          # protocol support needed by OpenCode's monorepo. Pin to 1.3.2.
+          HOST_BUN_VERSION="1.3.2"
           GOT="$(bun --version 2>/dev/null || true)"
-          if [ "$GOT" != "$WANT" ]; then
-            echo "Installing Bun v${WANT} (current: ${GOT:-none})..."
-            curl -fsSL https://bun.sh/install | bash -s "bun-v${WANT}"
+          if [ "$GOT" != "$HOST_BUN_VERSION" ]; then
+            echo "Installing Bun v${HOST_BUN_VERSION} (current: ${GOT:-none})..."
+            curl -fsSL https://bun.sh/install | bash -s "bun-v${HOST_BUN_VERSION}"
             echo "$HOME/.bun/bin" >> $GITHUB_PATH
             export PATH="$HOME/.bun/bin:$PATH"
           fi
           echo "Host Bun version: $(bun --version)"
-          echo "Target Bun version: $WANT"
+          echo "Target Bun version: $BUN_VERSION"
 
       # =============================================
       # Cache expensive build artifacts
