@@ -20,6 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+HOST_BUN="${HOST_BUN:-bun}"
+if ! command -v "$HOST_BUN" >/dev/null 2>&1 && [ -x "${HOME}/.bun/bin/bun" ]; then
+    HOST_BUN="${HOME}/.bun/bin/bun"
+fi
+
 echo "=== Building Bun v${BUN_VERSION} for Android aarch64 ==="
 
 # Verify prerequisites
@@ -32,6 +37,12 @@ if [ ! -d "$WEBKIT_OUTPUT/lib" ]; then
     echo "ERROR: WebKit not built. Run scripts/build-webkit.sh first."
     exit 1
 fi
+
+# Bun's CMake source lists are generated files and are not stored in Git.
+# Always refresh them so a clean clone and a resumed build behave identically.
+echo ">>> Generating Bun CMake source lists..."
+cd "$BUN_SRC"
+"$HOST_BUN" scripts/glob-sources.mjs
 
 # Zig cache directory setup.
 #
@@ -47,11 +58,16 @@ fi
 # Fix: Symlink .zig-cache -> the explicit cache dir so both paths resolve to
 # the same physical location. Clear both first to avoid stale entries.
 echo ">>> Setting up Zig cache directories..."
-rm -rf "$BUN_BUILD/cache/zig" "$BUN_SRC/.zig-cache"
-mkdir -p "$BUN_BUILD/cache/zig/local"
-mkdir -p "$BUN_BUILD/cache/zig/global"
-ln -sfn "$BUN_BUILD/cache/zig/local" "$BUN_SRC/.zig-cache"
-echo "    Symlinked $BUN_SRC/.zig-cache -> $BUN_BUILD/cache/zig/local"
+ZIG_LOCAL_CACHE="$BUN_BUILD/cache/zig/local"
+if [ -L "$BUN_SRC/.zig-cache" ] && [ "$(readlink -f "$BUN_SRC/.zig-cache")" = "$ZIG_LOCAL_CACHE" ]; then
+    mkdir -p "$ZIG_LOCAL_CACHE" "$BUN_BUILD/cache/zig/global"
+    echo "    Reusing the version-isolated Zig cache"
+else
+    rm -rf "$BUN_BUILD/cache/zig" "$BUN_SRC/.zig-cache"
+    mkdir -p "$ZIG_LOCAL_CACHE" "$BUN_BUILD/cache/zig/global"
+    ln -sfn "$ZIG_LOCAL_CACHE" "$BUN_SRC/.zig-cache"
+    echo "    Symlinked $BUN_SRC/.zig-cache -> $ZIG_LOCAL_CACHE"
+fi
 
 # Create build directory
 mkdir -p "$BUN_BUILD"

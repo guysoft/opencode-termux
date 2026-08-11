@@ -1,0 +1,91 @@
+diff --git a/Source/JavaScriptCore/runtime/InitializeThreading.cpp b/Source/JavaScriptCore/runtime/InitializeThreading.cpp
+index 088d5b8b31..d05ce1f4b8 100644
+--- a/Source/JavaScriptCore/runtime/InitializeThreading.cpp
++++ b/Source/JavaScriptCore/runtime/InitializeThreading.cpp
+@@ -139,6 +139,19 @@ void initializeWithOptionsCustomization(const ScopedLambda<void()>& optionsCusto
+         if (VM::isInMiniMode())
+             WTF::fastEnableMiniMode(Options::forceMiniVMMode());
+ 
++#if defined(__ANDROID__)
++        // Android app processes (e.g., Termux) run under a strict seccomp filter
++        // that blocks certain syscalls, and debuggerd intercepts SIGSEGV before
++        // the app's signal handler. Force polling traps and disable Wasm signal
++        // handler to avoid crashes.
++        {
++            Options::AllowUnfinalizedAccessScope scope;
++            Options::usePollingTraps() = true;
++            Options::useWasmFaultSignalHandler() = false;
++            Options::useWasmFastMemory() = false;
++        }
++#endif
++
+         if (Wasm::isSupported() || !Options::usePollingTraps()) {
+             if (!Options::usePollingTraps())
+                 VMTraps::initializeSignals();
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c b/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c
+index fa12b67543..584eb82dcf 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c
+@@ -221,6 +221,9 @@ static void dump_thread_diagnostics(pthread_t thread)
+ #endif
+ #if PAS_PLATFORM(PLAYSTATION)
+     getname_result = pthread_get_name_np(thread, thread_name);
++#elif defined(__ANDROID__)
++    /* pthread_getname_np requires API 26+, stub for API 24 */
++    getname_result = -1;
+ #else
+     getname_result = pthread_getname_np(thread, thread_name, sizeof(thread_name));
+ #endif
+diff --git a/Source/bmalloc/bmalloc/SystemHeap.cpp b/Source/bmalloc/bmalloc/SystemHeap.cpp
+--- a/Source/bmalloc/bmalloc/SystemHeap.cpp
++++ b/Source/bmalloc/bmalloc/SystemHeap.cpp
+@@ -173,7 +173,13 @@ void* SystemHeap::malloc(size_t size, FailureAction action)
+ 
+ void* SystemHeap::memalign(size_t alignment, size_t size, FailureAction action)
+ {
++#if defined(__ANDROID__)
++    void* result = nullptr;
++    if (::posix_memalign(&result, alignment, size) != 0)
++        result = nullptr;
++#else
+     void* result = ::aligned_alloc(alignment, size);
++#endif
+     RELEASE_BASSERT(action == FailureAction::ReturnNull || result);
+     return result;
+ }
+diff --git a/Source/WTF/wtf/Assertions.h b/Source/WTF/wtf/Assertions.h
+--- a/Source/WTF/wtf/Assertions.h
++++ b/Source/WTF/wtf/Assertions.h
+@@ -47,7 +47,7 @@
+ #include <stdlib.h>
+ #include <wtf/ExportMacros.h>
+ 
+-#if OS(ANDROID) && !USE(BUN_JSC_ADDITIONS)
++#if OS(ANDROID)
+ #include <android/log.h>
+ #endif
+ 
+@@ -102,11 +102,11 @@
+ #if ENABLE(RELEASE_LOG)
+ #define RELEASE_LOG_DISABLED 0
+ #else
+-#define RELEASE_LOG_DISABLED !(USE(OS_LOG) || ENABLE(JOURNALD_LOG) || OS(ANDROID))
++#define RELEASE_LOG_DISABLED !(USE(OS_LOG) || ENABLE(JOURNALD_LOG) || (OS(ANDROID) && !USE(BUN_JSC_ADDITIONS)))
+ #endif
+ 
+ #ifndef VERBOSE_RELEASE_LOG
+-#define VERBOSE_RELEASE_LOG (ENABLE(JOURNALD_LOG) || OS(ANDROID))
++#define VERBOSE_RELEASE_LOG (ENABLE(JOURNALD_LOG) || (OS(ANDROID) && !USE(BUN_JSC_ADDITIONS)))
+ #endif
+ 
+ #define WTF_PRETTY_FUNCTION __PRETTY_FUNCTION__
+@@ -716,7 +716,7 @@
+     if ((isAllowed) && LOG_CHANNEL(channel).level >= (logLevel)) \
+         SUPPRESS_UNCOUNTED_LOCAL os_log(LOG_CHANNEL(channel).osLogChannel, __VA_ARGS__); \
+ } while (0)
+ 
+-#elif OS(ANDROID)
++#elif OS(ANDROID) && !USE(BUN_JSC_ADDITIONS)
+ 
+ #define PUBLIC_LOG_STRING "s"
+ #define PRIVATE_LOG_STRING "s"

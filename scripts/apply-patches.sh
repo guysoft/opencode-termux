@@ -18,7 +18,7 @@ source "$SCRIPT_DIR/env.sh"
 echo "=== Applying Patches ==="
 
 # --- Clone Bun ---
-if [ ! -d "$BUN_SRC/.git" ]; then
+if ! git -C "$BUN_SRC" rev-parse --git-dir >/dev/null 2>&1; then
     echo ">>> Cloning Bun v${BUN_VERSION}..."
     git clone --depth 1 --branch "${BUN_TAG}" https://github.com/oven-sh/bun.git "$BUN_SRC"
 else
@@ -29,12 +29,13 @@ fi
 echo ">>> Applying Bun Android patches..."
 cd "$BUN_SRC"
 git checkout -- . 2>/dev/null || true  # Reset any previous patches
-git apply --stat "$REPO_ROOT/patches/bun/android-support.patch"
-git apply "$REPO_ROOT/patches/bun/android-support.patch"
+BUN_PATCH="$REPO_ROOT/patches/bun/android-support-${BUN_VERSION}.patch"
+git apply --stat "$BUN_PATCH"
+git apply "$BUN_PATCH"
 echo "    Bun patches applied successfully"
 
 # --- Clone WebKit ---
-if [ ! -d "$WEBKIT_SRC/.git" ]; then
+if ! git -C "$WEBKIT_SRC" rev-parse --git-dir >/dev/null 2>&1; then
     echo ">>> Cloning WebKit at commit ${WEBKIT_COMMIT}..."
     mkdir -p "$WEBKIT_SRC"
     cd "$WEBKIT_SRC"
@@ -50,8 +51,9 @@ fi
 echo ">>> Applying WebKit Android patches..."
 cd "$WEBKIT_SRC"
 git checkout -- . 2>/dev/null || true  # Reset any previous patches
-git apply --stat "$REPO_ROOT/patches/webkit/android-support.patch"
-git apply "$REPO_ROOT/patches/webkit/android-support.patch"
+WEBKIT_PATCH="$REPO_ROOT/patches/webkit/android-support-${WEBKIT_COMMIT}.patch"
+git apply --stat "$WEBKIT_PATCH"
+git apply "$WEBKIT_PATCH"
 echo "    WebKit patches applied successfully"
 
 echo ""

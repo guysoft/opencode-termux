@@ -1,0 +1,7 @@
+# NDK-backed libc configuration for Zig cross compilation.
+include_dir=@NDK_SYSROOT@/usr/include
+sys_include_dir=@NDK_SYSROOT@/usr/include/@ANDROID_TRIPLE@
+crt_dir=@NDK_SYSROOT@/usr/lib/@ANDROID_TRIPLE@/@ANDROID_API@
+msvc_lib_dir=
+kernel32_lib_dir=
+gcc_dir=

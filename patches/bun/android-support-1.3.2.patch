@@ -1,34 +1,32 @@
 diff --git a/build.zig b/build.zig
-index 04afe96..07a91d1 100644
+index 0f45dce..c2166d6 100644
 --- a/build.zig
 +++ b/build.zig
-@@ -66,6 +66,7 @@ const BunBuildOptions = struct {
- 
+@@ -70,6 +70,7 @@ const BunBuildOptions = struct {
      cached_options_module: ?*Module = null,
      windows_shim: ?WindowsShim = null,
+     llvm_codegen_threads: ?u32 = null,
 +    android_ndk_sysroot: ?[]const u8 = null,
  
      pub fn isBaseline(this: *const BunBuildOptions) bool {
          return this.arch.isX86() and
-@@ -207,6 +208,9 @@ pub fn build(b: *Build) !void {
+@@ -214,6 +215,7 @@ pub fn build(b: *Build) !void {
  
      const no_llvm = b.option(bool, "no_llvm", "Experiment with Zig self hosted backends. No stability guaranteed") orelse false;
+     const override_no_export_cpp_apis = b.option(bool, "override-no-export-cpp-apis", "Override the default export_cpp_apis logic to disable exports") orelse false;
++    const android_ndk_sysroot = b.option([]const u8, "android-ndk-sysroot", "Path to Android NDK sysroot");
  
-+    // Android NDK sysroot path for translate-c (Zig has no bundled Android libc headers)
-+    const android_ndk_sysroot = b.option([]const u8, "android-ndk-sysroot", "Path to Android NDK sysroot (for translate-c)");
-+
      var build_options = BunBuildOptions{
          .target = target,
-         .optimize = optimize,
-@@ -268,6 +272,7 @@ pub fn build(b: *Build) !void {
-         .tracy_callstack_depth = b.option(u16, "tracy_callstack_depth", "") orelse 10,
-         .enable_logs = b.option(bool, "enable_logs", "Enable logs in release") orelse false,
-         .enable_asan = b.option(bool, "enable_asan", "Enable asan") orelse false,
+@@ -274,6 +276,7 @@ pub fn build(b: *Build) !void {
+         .enable_valgrind = b.option(bool, "enable_valgrind", "Enable valgrind") orelse false,
+         .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse false,
+         .llvm_codegen_threads = b.option(u32, "llvm_codegen_threads", "Number of threads to use for LLVM codegen") orelse 1,
 +        .android_ndk_sysroot = android_ndk_sysroot,
      };
  
      // zig build obj
-@@ -415,7 +420,7 @@ pub fn build(b: *Build) !void {
+@@ -441,7 +444,7 @@ pub fn build(b: *Build) !void {
          }) |t| {
              const resolved = t.resolveTarget(b);
              step.dependOn(
@@ -37,7 +35,7 @@ index 04afe96..07a91d1 100644
                      resolved.result.zigTriple(b.allocator) catch @panic("OOM"),
                  })).step,
              );
-@@ -485,7 +490,7 @@ fn addMultiCheck(
+@@ -514,7 +517,7 @@ fn addMultiCheck(
      }
  }
  
@@ -46,7 +44,7 @@ index 04afe96..07a91d1 100644
      const target = b.resolveTargetQuery(q: {
          var query = initial_target.query;
          if (query.os_tag == .windows)
-@@ -498,6 +503,16 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize:
+@@ -527,6 +530,16 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize:
          .optimize = optimize,
          .link_libc = true,
      });
@@ -63,7 +61,7 @@ index 04afe96..07a91d1 100644
      inline for ([_](struct { []const u8, bool }){
          .{ "WINDOWS", translate_c.target.result.os.tag == .windows },
          .{ "POSIX", translate_c.target.result.os.tag != .windows },
-@@ -653,7 +668,7 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
+@@ -698,7 +711,7 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
  
      mod.addImport("build_options", opts.buildOptionsModule(b));
  
@@ -72,21 +70,8 @@ index 04afe96..07a91d1 100644
      mod.addImport("translated-c-headers", b.createModule(.{ .root_source_file = translate_c }));
  
      const zlib_internal_path = switch (os) {
-diff --git a/cmake/CSources.txt b/cmake/CSources.txt
-index 67bf951..08212f1 100644
---- a/cmake/CSources.txt
-+++ b/cmake/CSources.txt
-@@ -8,4 +8,5 @@ packages/bun-usockets/src/quic.c
- packages/bun-usockets/src/socket.c
- packages/bun-usockets/src/udp.c
- src/bun.js/bindings/uv-posix-polyfills.c
--src/bun.js/bindings/uv-posix-stubs.c
-\ No newline at end of file
-+src/bun.js/bindings/uv-posix-stubs.c
-+src/android_tls_align.c
-\ No newline at end of file
 diff --git a/cmake/CompilerFlags.cmake b/cmake/CompilerFlags.cmake
-index c321c75..142d228 100644
+index cff32fb..b0f9f9d 100644
 --- a/cmake/CompilerFlags.cmake
 +++ b/cmake/CompilerFlags.cmake
 @@ -21,6 +21,9 @@ endforeach()
@@ -99,7 +84,7 @@ index c321c75..142d228 100644
    else()
      register_compiler_flags(-march=armv8-a+crc -mtune=ampere1)
    endif()
-@@ -187,14 +190,26 @@ endif()
+@@ -196,14 +199,26 @@ endif()
  
  # --- Linker flags ---
  if(LINUX)
@@ -134,25 +119,7 @@ index c321c75..142d228 100644
  endif()
  
  # --- Assertions ---
-@@ -219,7 +234,7 @@ if(ENABLE_ASSERTIONS)
-     _FORTIFY_SOURCE=3
-   )
- 
--  if(LINUX)
-+  if(LINUX AND NOT ANDROID)
-     register_compiler_definitions(
-       DESCRIPTION "Enable glibc++ assertions"
-       _GLIBCXX_ASSERTIONS=1
-@@ -237,7 +252,7 @@ else()
-     _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE
-   )
- 
--  if(LINUX)
-+  if(LINUX AND NOT ANDROID)
-     register_compiler_definitions(
-       DESCRIPTION "Disable glibc++ assertions"
-       _GLIBCXX_ASSERTIONS=0
-@@ -313,5 +328,7 @@ endif()
+@@ -277,5 +292,7 @@ endif()
  # If we do not set this, it will crash at startup on the first memory allocation.
  if(NOT WIN32 AND NOT APPLE)
    set(CMAKE_CXX_EXTENSIONS ON)
@@ -162,7 +129,7 @@ index c321c75..142d228 100644
 +  endif()
  endif()
 diff --git a/cmake/Options.cmake b/cmake/Options.cmake
-index 412cb06..5e701d7 100644
+index ac6ce10..b6c0a26 100644
 --- a/cmake/Options.cmake
 +++ b/cmake/Options.cmake
 @@ -39,7 +39,13 @@ if(CMAKE_BUILD_TYPE MATCHES "MinSizeRel")
@@ -180,7 +147,7 @@ index 412cb06..5e701d7 100644
    setx(OS "darwin")
  elseif(WIN32)
    setx(OS "windows")
-@@ -58,13 +64,17 @@ else()
+@@ -75,13 +81,17 @@ if(WIN32)
  endif()
  
  if(LINUX)
@@ -203,7 +170,7 @@ index 412cb06..5e701d7 100644
  endif()
  
  if(ARCH STREQUAL "x64")
-@@ -154,7 +164,7 @@ optionx(USE_STATIC_SQLITE BOOL "If SQLite should be statically linked" DEFAULT $
+@@ -173,7 +183,7 @@ optionx(USE_STATIC_SQLITE BOOL "If SQLite should be statically linked" DEFAULT $
  
  set(DEFAULT_STATIC_LIBATOMIC ON)
  
@@ -212,19 +179,12 @@ index 412cb06..5e701d7 100644
    execute_process(
      COMMAND grep -w "NAME" /etc/os-release
      OUTPUT_VARIABLE LINUX_DISTRO
-@@ -179,3 +189,33 @@ optionx(USE_WEBKIT_ICU BOOL "Use the ICU libraries from WebKit" DEFAULT ${DEFAUL
- optionx(ERROR_LIMIT STRING "Maximum number of errors to show when compiling C++ code" DEFAULT "100")
+@@ -203,3 +213,28 @@ optionx(ERROR_LIMIT STRING "Maximum number of errors to show when compiling C++
+ set(USE_MIMALLOC_AS_DEFAULT_ALLOCATOR ON)
  
  list(APPEND CMAKE_ARGS -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
 +
-+# Android: Now that project() has been called, the toolchain file has been processed
-+# and all NDK variables (CMAKE_C_COMPILER, CMAKE_SYSROOT, etc.) are available.
-+# Populate CMAKE_ARGS so that dependency sub-builds also use the NDK compilers.
 +if(ANDROID AND ANDROID_DEFER_CMAKE_ARGS)
-+  message(STATUS "Android: Propagating NDK compilers to dependency sub-builds")
-+  message(STATUS "  CMAKE_C_COMPILER: ${CMAKE_C_COMPILER}")
-+  message(STATUS "  CMAKE_CXX_COMPILER: ${CMAKE_CXX_COMPILER}")
-+  message(STATUS "  CMAKE_SYSROOT: ${CMAKE_SYSROOT}")
 +  list(APPEND CMAKE_ARGS
 +    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
 +    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
@@ -233,6 +193,8 @@ index 412cb06..5e701d7 100644
 +    -DCMAKE_STRIP=${CMAKE_STRIP}
 +    -DCMAKE_SYSTEM_NAME=Android
 +    -DCMAKE_SYSTEM_VERSION=${CMAKE_SYSTEM_VERSION}
++    -DANDROID_PLATFORM=android-${CMAKE_SYSTEM_VERSION}
++    -DANDROID_PLATFORM_LEVEL=${CMAKE_SYSTEM_VERSION}
 +    -DCMAKE_ANDROID_ARCH_ABI=${CMAKE_ANDROID_ARCH_ABI}
 +    -DCMAKE_SYSROOT=${CMAKE_SYSROOT}
 +    -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
@@ -247,10 +209,36 @@ index 412cb06..5e701d7 100644
 +  endif()
 +endif()
 diff --git a/cmake/targets/BuildBun.cmake b/cmake/targets/BuildBun.cmake
-index c960084..aa591ff 100644
+index 6155f10..6255552 100644
 --- a/cmake/targets/BuildBun.cmake
 +++ b/cmake/targets/BuildBun.cmake
-@@ -537,6 +537,9 @@ endif()
+@@ -48,6 +48,16 @@ set(LLVM_ZIG_CODEGEN_THREADS 0)
+ 
+ # --- Dependencies ---
+ 
++if(ANDROID)
++  set(BUN_TINYCC_DEPENDENCY)
++  set(PREBUILT_LIBTCC "${WEBKIT_PATH}/lib/libtcc.a")
++  if(NOT EXISTS "${PREBUILT_LIBTCC}")
++    message(FATAL_ERROR "Prebuilt Android libtcc.a not found: ${PREBUILT_LIBTCC}")
++  endif()
++else()
++  set(BUN_TINYCC_DEPENDENCY TinyCC)
++endif()
++
+ set(BUN_DEPENDENCIES
+   BoringSSL
+   Brotli
+@@ -57,7 +67,7 @@ set(BUN_DEPENDENCIES
+   LolHtml
+   Lshpack
+   Mimalloc
+-  TinyCC
++  ${BUN_TINYCC_DEPENDENCY}
+   Zlib
+   LibArchive # must be loaded after zlib
+   HdrHistogram # must be loaded after zlib
+@@ -639,6 +649,9 @@ endif()
  if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|ARM|arm64|ARM64|aarch64|AARCH64")
    if(APPLE)
      set(ZIG_CPU "apple_m1")
@@ -260,7 +248,7 @@ index c960084..aa591ff 100644
    else()
      set(ZIG_CPU "native")
    endif()
-@@ -555,6 +558,11 @@ if(NOT "${REVISION}" STREQUAL "")
+@@ -657,6 +670,11 @@ if(NOT "${REVISION}" STREQUAL "")
    set(ZIG_FLAGS_BUN ${ZIG_FLAGS_BUN} -Dsha=${REVISION})
  endif()
  
@@ -272,7 +260,7 @@ index c960084..aa591ff 100644
  register_command(
    TARGET
      bun-zig
-@@ -606,6 +614,23 @@ if(WIN32)
+@@ -710,6 +728,23 @@ if(WIN32)
    list(APPEND BUN_CXX_SOURCES ${CWD}/src/bun.js/bindings/windows/rescle-binding.cpp)
  endif()
  
@@ -296,7 +284,7 @@ index c960084..aa591ff 100644
  register_repository(
    NAME
      picohttpparser
-@@ -699,6 +724,14 @@ if(NOT bun STREQUAL "bun")
+@@ -803,6 +838,14 @@ if(NOT bun STREQUAL "bun")
    add_custom_target(bun DEPENDS ${bun})
  endif()
  
@@ -311,7 +299,41 @@ index c960084..aa591ff 100644
  # --- C/C++ Properties ---
  
  set_target_properties(${bun} PROPERTIES
-@@ -816,10 +849,15 @@ if(NOT WIN32)
+@@ -859,7 +902,7 @@ if(NOT WIN32)
+   target_include_directories(${bun} PRIVATE ${CWD}/src/bun.js/bindings/libuv)
+ endif()
+ 
+-if(LINUX)
++if(LINUX AND NOT ANDROID)
+   include(CheckIncludeFiles)
+   check_include_files("sys/queue.h" HAVE_SYS_QUEUE_H)
+   if(NOT HAVE_SYS_QUEUE_H)
+@@ -867,6 +910,24 @@ if(LINUX)
+   endif()
+ endif()
+ 
++if(ANDROID)
++  target_link_options(${bun} PUBLIC
++    -fPIE
++    -pie
++    -Wl,--as-needed
++    -Wl,--gc-sections
++    -Wl,-z,stack-size=12800000
++    -Wl,-z,relro
++    -Wl,-O2
++    -Wl,-z,combreloc
++    -Wl,--no-eh-frame-hdr
++    -Wl,--sort-section=name
++    -Wl,--hash-style=both
++    -Wl,--build-id=sha1
++    -Wl,-Map=${bun}.linker-map
++  )
++endif()
++
+ # --- C/C++ Definitions ---
+ 
+ if(ENABLE_ASSERTIONS)
+@@ -926,10 +987,15 @@ if(NOT WIN32)
    target_compile_options(${bun} PUBLIC
      -fconstexpr-steps=2542484
      -fconstexpr-depth=54
@@ -329,208 +351,41 @@ index c960084..aa591ff 100644
    if(DEBUG)
      # TODO: this shouldn't be necessary long term
      if (NOT ABI STREQUAL "musl")
-@@ -880,6 +918,7 @@ if(NOT WIN32)
-       -Werror=sometimes-uninitialized
-       -Wno-c++23-lambda-attributes
-       -Wno-nullability-completeness
-+      -Wno-undefined-var-template
-       -Werror
-     )
-     
-@@ -937,54 +976,78 @@ if(APPLE)
- endif()
- 
- if(LINUX)
--  if(NOT ABI STREQUAL "musl")
--  target_link_options(${bun} PUBLIC
--    -Wl,--wrap=exp
--    -Wl,--wrap=expf
--    -Wl,--wrap=fcntl64
--    -Wl,--wrap=log
--    -Wl,--wrap=log2
--    -Wl,--wrap=log2f
--    -Wl,--wrap=logf
--    -Wl,--wrap=pow
--    -Wl,--wrap=powf
--  )
--  endif()
--
--  if(NOT ABI STREQUAL "musl")
-+  if(ANDROID)
-+    # Android uses libc++ (not libstdc++) and NDK clang handles this automatically.
-+    # No glibc symbol wrapping needed — Android uses Bionic.
-+    # Android requires PIE for executables.
-     target_link_options(${bun} PUBLIC
--      -static-libstdc++
--      -static-libgcc
-+      -fPIE
-+      -pie
-+      -Wl,-icf=safe
-+      -Wl,--as-needed
-+      -Wl,--gc-sections
-+      -Wl,-z,stack-size=12800000
-+      -Wl,--compress-debug-sections=zlib
-+      -Wl,-z,lazy
-+      -Wl,-z,relro
-+      -Wl,-O2
-+      -Wl,-z,combreloc
-+      -Wl,--no-eh-frame-hdr
-+      -Wl,--sort-section=name
-+      -Wl,--hash-style=both
-+      -Wl,--build-id=sha1
-+      -Wl,-Map=${bun}.linker-map
-     )
-   else()
-+    if(NOT ABI STREQUAL "musl")
-     target_link_options(${bun} PUBLIC
--      -lstdc++
--      -lgcc
-+      -Wl,--wrap=exp
-+      -Wl,--wrap=expf
-+      -Wl,--wrap=fcntl64
-+      -Wl,--wrap=log
-+      -Wl,--wrap=log2
-+      -Wl,--wrap=log2f
-+      -Wl,--wrap=logf
-+      -Wl,--wrap=pow
-+      -Wl,--wrap=powf
-     )
--  endif()
-+    endif()
- 
--  target_link_options(${bun} PUBLIC
--    --ld-path=${LLD_PROGRAM}
--    -fno-pic
--    -Wl,-no-pie
--    -Wl,-icf=safe
--    -Wl,--as-needed
--    -Wl,--gc-sections
--    -Wl,-z,stack-size=12800000
--    -Wl,--compress-debug-sections=zlib
--    -Wl,-z,lazy
--    -Wl,-z,norelro
--    # enable string tail merging
--    -Wl,-O2
--    # make debug info faster to load
--    -Wl,--gdb-index
--    -Wl,-z,combreloc
--    -Wl,--no-eh-frame-hdr
--    -Wl,--sort-section=name
--    -Wl,--hash-style=both
--    -Wl,--build-id=sha1  # Better for debugging than default
--    -Wl,-Map=${bun}.linker-map
--  )
-+    if(NOT ABI STREQUAL "musl")
-+      target_link_options(${bun} PUBLIC
-+        -static-libstdc++
-+        -static-libgcc
-+      )
-+    else()
-+      target_link_options(${bun} PUBLIC
-+        -lstdc++
-+        -lgcc
-+      )
-+    endif()
-+
-+    target_link_options(${bun} PUBLIC
-+      --ld-path=${LLD_PROGRAM}
-+      -fno-pic
-+      -Wl,-no-pie
-+      -Wl,-icf=safe
-+      -Wl,--as-needed
-+      -Wl,--gc-sections
-+      -Wl,-z,stack-size=12800000
-+      -Wl,--compress-debug-sections=zlib
-+      -Wl,-z,lazy
-+      -Wl,-z,norelro
-+      # enable string tail merging
-+      -Wl,-O2
-+      # make debug info faster to load
-+      -Wl,--gdb-index
-+      -Wl,-z,combreloc
-+      -Wl,--no-eh-frame-hdr
-+      -Wl,--sort-section=name
-+      -Wl,--hash-style=both
-+      -Wl,--build-id=sha1  # Better for debugging than default
-+      -Wl,-Map=${bun}.linker-map
-+    )
-+  endif()
- endif()
- 
- # --- Symbols list ---
-@@ -1059,7 +1122,23 @@ set(BUN_DEPENDENCIES
-   LolHtml
-   Lshpack
-   Mimalloc
--  TinyCC
-+)
-+
-+# TinyCC: on Android, use prebuilt libtcc.a (cross-compiled separately)
-+# because the TCC build needs a host c2str.exe tool that can't run under cross-compilation.
-+if(ANDROID)
-+  set(PREBUILT_LIBTCC "${CMAKE_SOURCE_DIR}/../webkit-android/lib/libtcc.a")
-+  if(EXISTS "${PREBUILT_LIBTCC}")
-+    message(STATUS "Using prebuilt libtcc.a for Android: ${PREBUILT_LIBTCC}")
-+    target_link_libraries(${bun} PRIVATE "${PREBUILT_LIBTCC}")
-+  else()
-+    message(FATAL_ERROR "Prebuilt libtcc.a not found at ${PREBUILT_LIBTCC}. Build it first with tinycc-build/build-android.sh")
-+  endif()
-+else()
-+  list(APPEND BUN_DEPENDENCIES TinyCC)
-+endif()
-+
-+list(APPEND BUN_DEPENDENCIES
-   Zlib
-   LibArchive # must be loaded after zlib
-   Zstd
-@@ -1092,22 +1171,33 @@ else()
- endif()
- 
- if(LINUX)
--  target_link_libraries(${bun} PRIVATE c pthread dl)
--
--  if(USE_STATIC_LIBATOMIC)
--    target_link_libraries(${bun} PRIVATE libatomic.a)
--  else()
--    target_link_libraries(${bun} PUBLIC libatomic.so)
--  endif()
--
--  if(USE_SYSTEM_ICU)
--    target_link_libraries(${bun} PRIVATE libicudata.a)
--    target_link_libraries(${bun} PRIVATE libicui18n.a)
--    target_link_libraries(${bun} PRIVATE libicuuc.a)
--  else()
-+  if(ANDROID)
-+    # Android Bionic: pthread is part of libc, dl is available, log is needed for __android_log
-+    target_link_libraries(${bun} PRIVATE c dl log)
-+    # Android NDK provides libatomic
-+    target_link_libraries(${bun} PRIVATE atomic)
-+    # ICU: use the ones from our WebKit build
-     target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicudata.a)
-     target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicui18n.a)
-     target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicuuc.a)
-+  else()
-+    target_link_libraries(${bun} PRIVATE c pthread dl)
-+
-+    if(USE_STATIC_LIBATOMIC)
-+      target_link_libraries(${bun} PRIVATE libatomic.a)
-+    else()
-+      target_link_libraries(${bun} PUBLIC libatomic.so)
-+    endif()
-+
-+    if(USE_SYSTEM_ICU)
-+      target_link_libraries(${bun} PRIVATE libicudata.a)
-+      target_link_libraries(${bun} PRIVATE libicui18n.a)
-+      target_link_libraries(${bun} PRIVATE libicuuc.a)
-+    else()
-+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicudata.a)
-+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicui18n.a)
-+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicuuc.a)
-+    endif()
+@@ -1074,7 +1140,7 @@ if(APPLE)
    endif()
  endif()
  
-@@ -1170,10 +1260,13 @@ if(NOT BUN_CPP_ONLY)
+-if(LINUX)
++if(LINUX AND NOT ANDROID)
+   if(NOT ABI STREQUAL "musl")
+   target_link_options(${bun} PUBLIC
+     -Wl,--wrap=exp
+@@ -1243,7 +1309,7 @@ else()
+   target_compile_definitions(${bun} PRIVATE LAZY_LOAD_SQLITE=1)
+ endif()
+ 
+-if(LINUX)
++if(LINUX AND NOT ANDROID)
+   target_link_libraries(${bun} PRIVATE c pthread dl)
+ 
+   if(USE_STATIC_LIBATOMIC)
+@@ -1257,6 +1323,15 @@ if(LINUX)
+   target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicuuc.a)
+ endif()
+ 
++if(ANDROID)
++  target_link_libraries(${bun} PRIVATE c dl log atomic "${PREBUILT_LIBTCC}")
++  target_link_libraries(${bun} PRIVATE
++    ${WEBKIT_LIB_PATH}/libicudata.a
++    ${WEBKIT_LIB_PATH}/libicui18n.a
++    ${WEBKIT_LIB_PATH}/libicuuc.a
++  )
++endif()
++
+ if(WIN32)
+   target_link_libraries(${bun} PRIVATE
+     winmm
+@@ -1360,10 +1435,13 @@ if(NOT BUN_CPP_ONLY)
    # ==856230==See https://github.com/google/sanitizers/issues/856 for possible workarounds.
    # the linked issue refers to very old kernels but this still happens to us on modern ones.
    # disabling ASLR to run the binary works around it
@@ -545,7 +400,7 @@ index c960084..aa591ff 100644
      set(TEST_BUN_COMMAND
        ${TEST_BUN_COMMAND_ENV_WRAP} setarch ${CMAKE_HOST_SYSTEM_PROCESSOR} -R ${TEST_BUN_COMMAND_BASE}
        || ${TEST_BUN_COMMAND_ENV_WRAP} ${TEST_BUN_COMMAND_BASE})
-@@ -1218,6 +1311,7 @@ if(NOT BUN_CPP_ONLY)
+@@ -1408,6 +1486,7 @@ if(NOT BUN_CPP_ONLY)
          ${BUILD_PATH}/features.json
      )
    endif()
@@ -553,7 +408,7 @@ index c960084..aa591ff 100644
  
    if(CMAKE_HOST_APPLE AND bunStrip)
      register_command(
-@@ -1244,7 +1338,9 @@ if(NOT BUN_CPP_ONLY)
+@@ -1434,7 +1513,9 @@ if(NOT BUN_CPP_ONLY)
  
    if(CI)
      set(bunTriplet bun-${OS}-${ARCH})
@@ -564,10 +419,10 @@ index c960084..aa591ff 100644
        set(bunTriplet ${bunTriplet}-musl)
      endif()
      if(ENABLE_BASELINE)
-@@ -1256,7 +1352,10 @@ if(NOT BUN_CPP_ONLY)
-     else()
+@@ -1454,7 +1535,10 @@ if(NOT BUN_CPP_ONLY)
        string(REPLACE bun ${bunTriplet} bunPath ${bun})
      endif()
+ 
 -    set(bunFiles ${bunExe} features.json)
 +    set(bunFiles ${bunExe})
 +    if(NOT ANDROID)
@@ -577,7 +432,7 @@ index c960084..aa591ff 100644
        list(APPEND bunFiles ${bun}.pdb)
      elseif(APPLE)
 diff --git a/cmake/targets/BuildLolHtml.cmake b/cmake/targets/BuildLolHtml.cmake
-index c9d9d24..2df0e9b 100644
+index 26fa265..2aae936 100644
 --- a/cmake/targets/BuildLolHtml.cmake
 +++ b/cmake/targets/BuildLolHtml.cmake
 @@ -26,11 +26,43 @@ if(RELEASE)
@@ -717,7 +572,7 @@ index 0000000..941c032
 +set(ANDROID ON)
 +set(ANDROID_BUILD ON)
 diff --git a/cmake/tools/SetupLLVM.cmake b/cmake/tools/SetupLLVM.cmake
-index 7d8cc12..377b81a 100644
+index a250342..831346a 100644
 --- a/cmake/tools/SetupLLVM.cmake
 +++ b/cmake/tools/SetupLLVM.cmake
 @@ -12,6 +12,35 @@ if(NOT ENABLE_LLVM)
@@ -757,7 +612,7 @@ index 7d8cc12..377b81a 100644
  
  optionx(LLVM_VERSION STRING "The version of LLVM to use" DEFAULT ${DEFAULT_LLVM_VERSION})
 diff --git a/cmake/tools/SetupWebKit.cmake b/cmake/tools/SetupWebKit.cmake
-index 421b28a..41b4b4c 100644
+index aa07c06..00f22de 100644
 --- a/cmake/tools/SetupWebKit.cmake
 +++ b/cmake/tools/SetupWebKit.cmake
 @@ -7,6 +7,15 @@ endif()
@@ -787,7 +642,7 @@ index 421b28a..41b4b4c 100644
  set(WEBKIT_LIB_PATH ${WEBKIT_PATH}/lib)
  
 diff --git a/cmake/tools/SetupZig.cmake b/cmake/tools/SetupZig.cmake
-index fffdce2..b41299f 100644
+index 925fdee..3db7cd7 100644
 --- a/cmake/tools/SetupZig.cmake
 +++ b/cmake/tools/SetupZig.cmake
 @@ -11,7 +11,10 @@ if(APPLE)
@@ -803,10 +658,10 @@ index fffdce2..b41299f 100644
    else()
      set(DEFAULT_ZIG_TARGET ${DEFAULT_ZIG_ARCH}-linux-gnu)
 diff --git a/packages/bun-usockets/src/bsd.c b/packages/bun-usockets/src/bsd.c
-index f4d4bc3..06bc9ae 100644
+index 732d795..92b0af4 100644
 --- a/packages/bun-usockets/src/bsd.c
 +++ b/packages/bun-usockets/src/bsd.c
-@@ -1042,7 +1042,7 @@ static LIBUS_SOCKET_DESCRIPTOR bsd_create_unix_socket_address(const char *path,
+@@ -1095,7 +1095,7 @@ static LIBUS_SOCKET_DESCRIPTOR bsd_create_unix_socket_address(const char *path,
              memcpy(dirname_buf, path, dirname_len);
              dirname_buf[dirname_len] = 0;
  
@@ -816,10 +671,10 @@ index f4d4bc3..06bc9ae 100644
                  errno = ENAMETOOLONG;
                  return LIBUS_SOCKET_ERROR;
 diff --git a/src/Global.zig b/src/Global.zig
-index 8f97d4f..52a9cba 100644
+index 0a9a6c5..cb3fe38 100644
 --- a/src/Global.zig
 +++ b/src/Global.zig
-@@ -149,7 +149,9 @@ pub fn raiseIgnoringPanicHandler(sig: bun.SignalCode) noreturn {
+@@ -148,7 +148,9 @@ pub fn raiseIgnoringPanicHandler(sig: bun.SignalCode) noreturn {
              .mask = std.posix.empty_sigset,
              .flags = std.posix.SA.RESETHAND,
          };
@@ -830,63 +685,6 @@ index 8f97d4f..52a9cba 100644
      }
  
      // kill self
-diff --git a/src/StandaloneModuleGraph.zig b/src/StandaloneModuleGraph.zig
-index 267d1f8..dcc64b7 100644
---- a/src/StandaloneModuleGraph.zig
-+++ b/src/StandaloneModuleGraph.zig
-@@ -19,6 +19,8 @@ pub const StandaloneModuleGraph = struct {
-     bytes: []const u8 = "",
-     files: bun.StringArrayHashMap(File),
-     entry_point_id: u32 = 0,
-+    compile_exec_argv: []const u8 = "",
-+    flags: Flags = .{},
- 
-     // We never want to hit the filesystem for these files
-     // We use the `/$bunfs/` prefix to indicate that it's a virtual path
-@@ -67,7 +69,7 @@ pub const StandaloneModuleGraph = struct {
- 
-     // by normalized file path
-     pub fn find(this: *const StandaloneModuleGraph, name: []const u8) ?*File {
--        if (!isBunStandaloneFilePath(base_path)) {
-+        if (!isBunStandaloneFilePath(name)) {
-             return null;
-         }
- 
-@@ -267,6 +269,16 @@ pub const StandaloneModuleGraph = struct {
-         byte_count: usize = 0,
-         modules_ptr: bun.StringPointer = .{},
-         entry_point_id: u32 = 0,
-+        compile_exec_argv_ptr: bun.StringPointer = .{},
-+        flags: Flags = .{},
-+    };
-+
-+    pub const Flags = packed struct(u32) {
-+        disable_default_env_files: bool = false,
-+        disable_autoload_bunfig: bool = false,
-+        disable_autoload_tsconfig: bool = false,
-+        disable_autoload_package_json: bool = false,
-+        _padding: u28 = 0,
-     };
- 
-     const trailer = "\n---- Bun! ----\n";
-@@ -310,6 +322,8 @@ pub const StandaloneModuleGraph = struct {
-             .bytes = raw_bytes[0..offsets.byte_count],
-             .files = modules,
-             .entry_point_id = offsets.entry_point_id,
-+            .compile_exec_argv = sliceToZ(raw_bytes, offsets.compile_exec_argv_ptr),
-+            .flags = offsets.flags,
-         };
-     }
- 
-@@ -445,6 +459,8 @@ pub const StandaloneModuleGraph = struct {
-             .entry_point_id = @as(u32, @truncate(entry_point_id.?)),
-             .modules_ptr = string_builder.appendCount(std.mem.sliceAsBytes(modules.items)),
-             .byte_count = string_builder.len,
-+            .compile_exec_argv_ptr = .{},
-+            .flags = .{},
-         };
- 
-         _ = string_builder.append(std.mem.asBytes(&offsets));
 diff --git a/src/android_tls_align.c b/src/android_tls_align.c
 new file mode 100644
 index 0000000..f801b82
@@ -958,62 +756,34 @@ index 0000000..6ea310b
 +_android_tls_align_force:
 +.zero 64
 diff --git a/src/bun.js/bindings/ZigGlobalObject.cpp b/src/bun.js/bindings/ZigGlobalObject.cpp
-index 5e534e5..e60230d 100644
+index caf3c26..b14fc27 100644
 --- a/src/bun.js/bindings/ZigGlobalObject.cpp
 +++ b/src/bun.js/bindings/ZigGlobalObject.cpp
-@@ -275,20 +275,35 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
-     }
+@@ -278,6 +278,12 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+         }
  #endif
  
 +#if defined(__ANDROID__)
-+    // Android app processes (e.g., Termux) have a strict seccomp filter and
-+    // debuggerd crash handler that intercepts SIGSEGV before the app's signal
-+    // handler. This causes JSC's signal-based VM traps and Wasm fault handler
-+    // to crash the process instead of being caught by JSC's handler.
-+    //
-+    // IMPORTANT: We must set these via environment variables rather than the
-+    // Options API because JSC::initialize() -> Options::initialize() resets
-+    // ALL options to their defaults before reading env vars. Setting options
-+    // via the API before JSC::initialize() has no effect.
-+    setenv("JSC_usePollingTraps", "true", 0);
-+    setenv("JSC_useWasmFaultSignalHandler", "false", 0);
-+    setenv("JSC_useWasmFastMemory", "false", 0);
++        setenv("JSC_usePollingTraps", "true", 0);
++        setenv("JSC_useWasmFaultSignalHandler", "false", 0);
++        setenv("JSC_useWasmFastMemory", "false", 0);
 +#endif
 +
-     JSC::initialize();
-     {
+         JSC::initialize();
+         {
  
-         JSC::Options::AllowUnfinalizedAccessScope scope;
- 
-         JSC::Options::useConcurrentJIT() = true;
-+        JSC::Options::useJIT() = true;
-+        JSC::Options::useBBQJIT() = true;
-         // JSC::Options::useSigillCrashAnalyzer() = true;
-         JSC::Options::useWasm() = true;
-         JSC::Options::useSourceProviderCache() = true;
-         // JSC::Options::useUnlinkedCodeBlockJettisoning() = false;
-         JSC::Options::exposeInternalModuleLoader() = true;
-         JSC::Options::useSharedArrayBuffer() = true;
--        JSC::Options::useJIT() = true;
--        JSC::Options::useBBQJIT() = true;
-         JSC::Options::useJITCage() = false;
-         JSC::Options::useShadowRealm() = true;
-         JSC::Options::useV8DateParser() = true;
-@@ -298,6 +313,15 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
-         JSC::Options::heapGrowthMaxIncrease() = 2.0;
-         JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
+@@ -303,6 +309,12 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+             JSC::Options::useExplicitResourceManagement() = true;
+             JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
  
 +#if defined(__ANDROID__)
-+        // Reinforce Android options after JSC::initialize() for any runtime checks.
-+        // The env vars set above handle the initialization-time checks (signal handler
-+        // installation), but some options are also checked at runtime.
-+        JSC::Options::usePollingTraps() = true;
-+        JSC::Options::useWasmFaultSignalHandler() = false;
-+        JSC::Options::useWasmFastMemory() = false;
++            JSC::Options::usePollingTraps() = true;
++            JSC::Options::useWasmFaultSignalHandler() = false;
++            JSC::Options::useWasmFastMemory() = false;
 +#endif
 +
  #ifdef BUN_DEBUG
-         JSC::Options::showPrivateScriptsInStackTraces() = true;
+             JSC::Options::showPrivateScriptsInStackTraces() = true;
  #endif
 diff --git a/src/bun.js/bindings/bun-spawn.cpp b/src/bun.js/bindings/bun-spawn.cpp
 index 4a81d79..be8f733 100644
@@ -1038,7 +808,7 @@ index 4a81d79..be8f733 100644
  
  #ifndef CLOSE_RANGE_CLOEXEC
 diff --git a/src/bun.js/bindings/c-bindings.cpp b/src/bun.js/bindings/c-bindings.cpp
-index 8675973..48cffba 100644
+index 0ec3d0b..d6bef9b 100644
 --- a/src/bun.js/bindings/c-bindings.cpp
 +++ b/src/bun.js/bindings/c-bindings.cpp
 @@ -195,16 +195,58 @@ extern "C" void windows_enable_stdio_inheritance()
@@ -1163,53 +933,53 @@ index daa0f78..39c021b 100644
 +#endif
  
  #endif
+diff --git a/src/bun.js/bindings/v8/V8Array.cpp b/src/bun.js/bindings/v8/V8Array.cpp
+index 9bd46d5..5f74436 100644
+--- a/src/bun.js/bindings/v8/V8Array.cpp
++++ b/src/bun.js/bindings/v8/V8Array.cpp
+@@ -152,3 +152,13 @@ Maybe<void> Array::Iterate(Local<Context> context, IterationCallback callback, v
+ }
+ 
+ } // namespace v8
++
++#if defined(__ANDROID__)
++// Zig's Linux dead-code-elimination anchor uses the libstdc++ mangled name,
++// while Android's libc++ correctly emits the __ndk1 inline namespace. Keep a
++// no-op anchor for the Linux spelling; real Android callers use the __ndk1
++// implementation above.
++extern "C" BUN_EXPORT void bunAndroidV8ArrayNewStdFunctionAnchor()
++    __asm__("_ZN2v85Array3NewENS_5LocalINS_7ContextEEEmSt8functionIFNS_10MaybeLocalINS_5ValueEEEvEE");
++extern "C" BUN_EXPORT void bunAndroidV8ArrayNewStdFunctionAnchor() { }
++#endif
 diff --git a/src/bun.js/node/node_fs.zig b/src/bun.js/node/node_fs.zig
-index 1fa1bd7..49696df 100644
+index 89b7d12..51ec7fb 100644
 --- a/src/bun.js/node/node_fs.zig
 +++ b/src/bun.js/node/node_fs.zig
-@@ -3864,6 +3864,11 @@ pub const NodeFS = struct {
+@@ -3850,6 +3850,10 @@ pub const NodeFS = struct {
              return Maybe(Return.Lchmod).todo();
          }
  
 +        if (comptime Environment.isAndroid) {
-+            // Android/Bionic doesn't have lchmod. Return ENOSYS (same behavior as Linux glibc).
 +            return .{ .err = .{ .errno = @intFromEnum(std.posix.E.NOSYS), .syscall = .lchmod } };
 +        }
 +
          const path = args.path.sliceZ(&this.sync_error_buf);
          return Maybe(Return.Lchmod).errnoSysP(c.lchmod(path, @truncate(args.mode)), .lchmod, path) orelse
-             Maybe(Return.Lchmod).success;
+             .success;
 diff --git a/src/bun.js/node/node_os.zig b/src/bun.js/node/node_os.zig
-index f5790e3..4fadcc0 100644
+index f9426e7..69fba2a 100644
 --- a/src/bun.js/node/node_os.zig
 +++ b/src/bun.js/node/node_os.zig
-@@ -11,6 +11,16 @@ const gen = bun.gen.node_os;
- const sys = bun.sys;
- const c = bun.c;
- 
-+// Android NDK's __INTRODUCED_IN(24) annotations prevent translate-c from
-+// picking up getifaddrs/freeifaddrs. Declare them manually since we target API 24.
-+const android_compat = if (Environment.isAndroid) struct {
-+    pub const getifaddrs = @extern(*const fn (?*?*c.ifaddrs) callconv(.C) c_int, .{ .name = "getifaddrs" });
-+    pub const freeifaddrs = @extern(*const fn (?*c.ifaddrs) callconv(.C) void, .{ .name = "freeifaddrs" });
-+} else struct {
-+    pub const getifaddrs = c.getifaddrs;
-+    pub const freeifaddrs = c.freeifaddrs;
-+};
-+
- pub fn createNodeOsBinding(global: *JSC.JSGlobalObject) JSC.JSValue {
-     return JSC.JSObject.create(.{
-         .cpus = gen.createCpusCallback(global),
-@@ -471,7 +481,7 @@ pub const networkInterfaces = switch (Environment.os) {
- fn networkInterfacesPosix(globalThis: *JSC.JSGlobalObject) bun.JSError!JSC.JSValue {
+@@ -458,7 +458,7 @@ pub const networkInterfaces = switch (Environment.os) {
+ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
      // getifaddrs sets a pointer to a linked list
      var interface_start: ?*c.ifaddrs = null;
 -    const rc = c.getifaddrs(&interface_start);
 +    const rc = android_compat.getifaddrs(&interface_start);
      if (rc != 0) {
-         const err = JSC.SystemError{
+         const err = jsc.SystemError{
              .message = bun.String.static("A system error occurred: getifaddrs returned an error"),
-@@ -482,7 +492,7 @@ fn networkInterfacesPosix(globalThis: *JSC.JSGlobalObject) bun.JSError!JSC.JSVal
+@@ -469,7 +469,7 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
  
          return globalThis.throwValue(err.toErrorInstance(globalThis));
      }
@@ -1218,11 +988,36 @@ index f5790e3..4fadcc0 100644
  
      const helpers = struct {
          // We'll skip interfaces that aren't actually available
+@@ -1023,3 +1023,11 @@ const strings = bun.strings;
+ const sys = bun.sys;
+ const gen = bun.gen.node_os;
+ const libuv = bun.windows.libuv;
++
++const android_compat = if (Environment.isAndroid) struct {
++    pub const getifaddrs = @extern(*const fn (?*?*c.ifaddrs) callconv(.C) c_int, .{ .name = "getifaddrs" });
++    pub const freeifaddrs = @extern(*const fn (?*c.ifaddrs) callconv(.C) void, .{ .name = "freeifaddrs" });
++} else struct {
++    pub const getifaddrs = c.getifaddrs;
++    pub const freeifaddrs = c.freeifaddrs;
++};
+diff --git a/src/cli/run_command.zig b/src/cli/run_command.zig
+index 870c6a3..1ae6171 100644
+--- a/src/cli/run_command.zig
++++ b/src/cli/run_command.zig
+@@ -607,7 +607,7 @@ pub const RunCommand = struct {
+         .windows => @compileError("Do not use RunCommand.bun_node_dir on Windows"),
+ 
+         .mac => "/private/tmp",
+-        else => "/tmp",
++        else => if (Environment.isAndroid) "/data/data/com.termux/files/usr/tmp" else "/tmp",
+     } ++ if (!Environment.isDebug)
+         "/bun-node" ++ if (Environment.git_sha_short.len > 0) "-" ++ Environment.git_sha_short else ""
+     else
 diff --git a/src/cli/upgrade_command.zig b/src/cli/upgrade_command.zig
-index d4bdc2a..184fb08 100644
+index 8e8ebbc..09d8b47 100644
 --- a/src/cli/upgrade_command.zig
 +++ b/src/cli/upgrade_command.zig
-@@ -78,14 +78,14 @@ pub const Version = struct {
+@@ -37,14 +37,14 @@ pub const Version = struct {
  
      pub const platform_label = switch (Environment.os) {
          .mac => "darwin",
@@ -1240,10 +1035,10 @@ index d4bdc2a..184fb08 100644
      const suffix = suffix_abi ++ suffix_cpu;
      pub const folder_name = "bun-" ++ triplet ++ suffix;
 diff --git a/src/compile_target.zig b/src/compile_target.zig
-index 5854064..4ed0a6e 100644
+index b0f8874..88ba798 100644
 --- a/src/compile_target.zig
 +++ b/src/compile_target.zig
-@@ -19,7 +19,7 @@ version: bun.Semver.Version = .{
+@@ -14,7 +14,7 @@ version: bun.Semver.Version = .{
      .minor = @truncate(Environment.version.minor),
      .patch = @truncate(Environment.version.patch),
  },
@@ -1253,19 +1048,19 @@ index 5854064..4ed0a6e 100644
  const Libc = enum {
      /// The default libc for the target
 diff --git a/src/crash_handler.zig b/src/crash_handler.zig
-index 3746d94..3a6b1c0 100644
+index 885b462..f379bd7 100644
 --- a/src/crash_handler.zig
 +++ b/src/crash_handler.zig
-@@ -658,7 +658,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
+@@ -693,7 +693,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
                          },
                      );
  
 -                    if (bun.Environment.isLinux) {
 +                    if (bun.Environment.isLinux and !bun.Environment.isAndroid) {
-                         if (bun.getenvZ("USER")) |user| {
+                         if (bun.env_var.USER.get()) |user| {
                              if (user.len > 0) {
                                  Output.prettyError(
-@@ -790,13 +790,61 @@ const metadata_version_line = std.fmt.comptimePrint(
+@@ -825,13 +825,61 @@ const metadata_version_line = std.fmt.comptimePrint(
      },
  );
  
@@ -1328,7 +1123,7 @@ index 3746d94..3a6b1c0 100644
      crashHandler(
          switch (sig) {
              std.posix.SIG.SEGV => .{ .segmentation_fault = addr },
-@@ -808,7 +856,7 @@ fn handleSegfaultPosix(sig: i32, info: *const std.posix.siginfo_t, _: ?*const an
+@@ -843,7 +891,7 @@ fn handleSegfaultPosix(sig: i32, info: *const std.posix.siginfo_t, _: ?*const an
              else => unreachable,
          },
          null,
@@ -1337,23 +1132,23 @@ index 3746d94..3a6b1c0 100644
      );
  }
  
-@@ -918,7 +966,10 @@ pub fn printMetadata(writer: anytype) !void {
+@@ -962,7 +1010,10 @@ pub fn printMetadata(writer: anytype) !void {
      {
-         const platform = bun.Analytics.GenerateHeader.GeneratePlatform.forOS();
+         const platform = bun.analytics.GenerateHeader.GeneratePlatform.forOS();
          const cpu_features = CPUFeatures.get();
 -        if (bun.Environment.isLinux and !bun.Environment.isMusl) {
 +        if (bun.Environment.isLinux and bun.Environment.isAndroid) {
-+            const kernel_version = bun.Analytics.GenerateHeader.GeneratePlatform.kernelVersion();
++            const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
 +            try writer.print("Android/Linux Kernel v{d}.{d}.{d} | Bionic\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch });
 +        } else if (bun.Environment.isLinux and !bun.Environment.isMusl) {
              const version = gnu_get_libc_version() orelse "";
-             const kernel_version = bun.Analytics.GenerateHeader.GeneratePlatform.kernelVersion();
+             const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
              if (platform.os == .wsl) {
 diff --git a/src/deps/c_ares.zig b/src/deps/c_ares.zig
-index 867828f..7415c55 100644
+index 7a20dd4..05acfab 100644
 --- a/src/deps/c_ares.zig
 +++ b/src/deps/c_ares.zig
-@@ -1813,7 +1813,7 @@ pub const Error = enum(i32) {
+@@ -1795,7 +1795,7 @@ pub const Error = enum(i32) {
              return Error.ENOTFOUND;
          }
  
@@ -1362,409 +1157,24 @@ index 867828f..7415c55 100644
              switch (eai) {
                  .SOCKTYPE => return Error.ECONNREFUSED,
                  .IDN_ENCODE => return Error.EBADSTR,
-diff --git a/src/deps/tcc.zig b/src/deps/tcc.zig
-index 6a5dca0..ded884a 100644
---- a/src/deps/tcc.zig
-+++ b/src/deps/tcc.zig
-@@ -1,38 +1,6 @@
--pub const TCCState = State;
--const TCCErrorFunc = ?*const fn (?*anyopaque, [*:0]const u8) callconv(.C) void;
--fn ErrorFunc(Ctx: type) type {
--    return fn (ctx: ?*Ctx, msg: [*:0]const u8) callconv(.C) void;
--}
--extern fn tcc_new() ?*TCCState;
--extern fn tcc_delete(s: *TCCState) void;
--extern fn tcc_set_lib_path(s: *TCCState, path: [*:0]const u8) void;
--extern fn tcc_set_error_func(s: *TCCState, error_opaque: ?*anyopaque, error_func: TCCErrorFunc) void;
--extern fn tcc_get_error_func(s: *TCCState) TCCErrorFunc;
--extern fn tcc_get_error_opaque(s: *TCCState) ?*anyopaque;
--extern fn tcc_set_options(s: *TCCState, str: [*:0]const u8) c_int;
--extern fn tcc_add_include_path(s: *TCCState, pathname: [*:0]const u8) c_int;
--extern fn tcc_add_sysinclude_path(s: *TCCState, pathname: [*:0]const u8) c_int;
--extern fn tcc_define_symbol(s: *TCCState, sym: [*:0]const u8, value: [*:0]const u8) void;
--extern fn tcc_undefine_symbol(s: *TCCState, sym: [*:0]const u8) void;
--extern fn tcc_add_file(s: *TCCState, filename: [*:0]const u8) c_int;
--extern fn tcc_compile_string(s: *TCCState, buf: [*:0]const u8) c_int;
--extern fn tcc_set_output_type(s: *TCCState, output_type: c_int) c_int;
--extern fn tcc_add_library_path(s: *TCCState, pathname: [*:0]const u8) c_int;
--extern fn tcc_add_library(s: *TCCState, libraryname: [*:0]const u8) c_int;
--extern fn tcc_add_symbol(s: *TCCState, name: [*:0]const u8, val: *const anyopaque) c_int;
--extern fn tcc_output_file(s: *TCCState, filename: [*:0]const u8) c_int;
--extern fn tcc_run(s: *TCCState, argc: c_int, argv: [*c][*c]u8) c_int;
--extern fn tcc_relocate(s1: *TCCState, ptr: ?*anyopaque) c_int;
--extern fn tcc_get_symbol(s: *TCCState, name: [*:0]const u8) ?*anyopaque;
--extern fn tcc_list_symbols(s: *TCCState, ctx: ?*anyopaque, symbol_cb: ?*const fn (?*anyopaque, [*:0]const u8, ?*const anyopaque) callconv(.C) void) void;
--const TCC_OUTPUT_MEMORY = @as(c_int, 1);
--const TCC_OUTPUT_EXE = @as(c_int, 2);
--const TCC_OUTPUT_DLL = @as(c_int, 3);
--const TCC_OUTPUT_OBJ = @as(c_int, 4);
--const TCC_OUTPUT_PREPROCESS = @as(c_int, 5);
--const TCC_RELOCATE_AUTO: ?*anyopaque = @ptrCast(&1);
--
-+// TinyCC (tcc) bindings for Bun's FFI.
- const std = @import("std");
-+const bun = @import("bun");
- const Allocator = std.mem.Allocator;
- 
- pub const Error = error{
-@@ -47,27 +15,74 @@ pub const Error = error{
-     ExecError,
-     /// Could not get a symbol for some reason
-     RelocationError,
-+    /// TCC is not available on this platform
-+    Unsupported,
- };
-+
- pub const OutputFormat = enum(c_int) {
-     /// Output will be run in memory
--    Memory = TCC_OUTPUT_MEMORY,
-+    Memory = 1,
-     /// Executable file
--    Exe = TCC_OUTPUT_EXE,
-+    Exe = 2,
-     /// Dynamic library
--    Dll = TCC_OUTPUT_DLL,
-+    Dll = 3,
-     /// Object file
--    Obj = TCC_OUTPUT_OBJ,
-+    Obj = 4,
-     /// Only preprocess
--    Preprocess = TCC_OUTPUT_PREPROCESS,
-+    Preprocess = 5,
- };
- 
--/// Nominal type for some registered symbol. Used to force `@ptrCast` usage without
--/// allowing for interop with other APIs taking `*anyopaque` pointers.
-+/// Nominal type for some registered symbol.
- pub const Symbol = opaque {
-     const Callback = fn (?*anyopaque, [*:0]const u8, ?*const Symbol) void;
- };
- 
--pub const State = opaque {
-+// ============================================================
-+// TCC is available on all platforms including Android (aarch64)
-+// ============================================================
-+pub const tcc_available = true;
-+
-+pub const TCCState = State;
-+
-+pub const State = NativeState;
-+
-+// ---------- Native (non-Android) implementation ----------
-+const TCCErrorFunc = ?*const fn (?*anyopaque, [*:0]const u8) callconv(.C) void;
-+fn ErrorFunc(Ctx: type) type {
-+    return fn (ctx: ?*Ctx, msg: [*:0]const u8) callconv(.C) void;
-+}
-+
-+extern fn tcc_new() ?*NativeState;
-+extern fn tcc_delete(s: *NativeState) void;
-+extern fn tcc_set_lib_path(s: *NativeState, path: [*:0]const u8) void;
-+extern fn tcc_set_error_func(s: *NativeState, error_opaque: ?*anyopaque, error_func: TCCErrorFunc) void;
-+extern fn tcc_get_error_func(s: *NativeState) TCCErrorFunc;
-+extern fn tcc_get_error_opaque(s: *NativeState) ?*anyopaque;
-+extern fn tcc_set_options(s: *NativeState, str: [*:0]const u8) c_int;
-+extern fn tcc_add_include_path(s: *NativeState, pathname: [*:0]const u8) c_int;
-+extern fn tcc_add_sysinclude_path(s: *NativeState, pathname: [*:0]const u8) c_int;
-+extern fn tcc_define_symbol(s: *NativeState, sym: [*:0]const u8, value: [*:0]const u8) void;
-+extern fn tcc_undefine_symbol(s: *NativeState, sym: [*:0]const u8) void;
-+extern fn tcc_add_file(s: *NativeState, filename: [*:0]const u8) c_int;
-+extern fn tcc_compile_string(s: *NativeState, buf: [*:0]const u8) c_int;
-+extern fn tcc_set_output_type(s: *NativeState, output_type: c_int) c_int;
-+extern fn tcc_add_library_path(s: *NativeState, pathname: [*:0]const u8) c_int;
-+extern fn tcc_add_library(s: *NativeState, libraryname: [*:0]const u8) c_int;
-+extern fn tcc_add_symbol(s: *NativeState, name: [*:0]const u8, val: *const anyopaque) c_int;
-+extern fn tcc_output_file(s: *NativeState, filename: [*:0]const u8) c_int;
-+extern fn tcc_run(s: *NativeState, argc: c_int, argv: [*c][*c]u8) c_int;
-+extern fn tcc_relocate(s1: *NativeState, ptr: ?*anyopaque) c_int;
-+extern fn tcc_get_symbol(s: *NativeState, name: [*:0]const u8) ?*anyopaque;
-+extern fn tcc_list_symbols(s: *NativeState, ctx: ?*anyopaque, symbol_cb: ?*const fn (?*anyopaque, [*:0]const u8, ?*const anyopaque) callconv(.C) void) void;
-+
-+const TCC_OUTPUT_MEMORY = @as(c_int, 1);
-+const TCC_OUTPUT_EXE = @as(c_int, 2);
-+const TCC_OUTPUT_DLL = @as(c_int, 3);
-+const TCC_OUTPUT_OBJ = @as(c_int, 4);
-+const TCC_OUTPUT_PREPROCESS = @as(c_int, 5);
-+const TCC_RELOCATE_AUTO: ?*anyopaque = @ptrCast(&1);
-+
-+const NativeState = opaque {
-     pub fn Config(ErrCtx: type) type {
-         return struct {
-             options: ?[:0]const u8 = null,
-@@ -80,25 +95,21 @@ pub const State = opaque {
-     }
- 
-     /// Create a new TCC compilation context
--    pub fn new() Allocator.Error!*State {
-+    pub fn new() Allocator.Error!*NativeState {
-         return tcc_new() orelse error.OutOfMemory;
-     }
- 
-     /// Create and initialize a new TCC compilation context
--    pub fn init(ErrCtx: type, config: Config(ErrCtx), comptime validate_options: bool) (Allocator.Error || Error)!*State {
--        var state = try State.new();
-+    pub fn init(ErrCtx: type, config: Config(ErrCtx), comptime validate_options: bool) (Allocator.Error || Error)!*NativeState {
-+        var state = try NativeState.new();
-         errdefer state.deinit();
- 
--        // setOutputType has side effects that are conditional on existing
--        // options, so this must be called after setOptions
-         if (comptime !validate_options) {
-             if (config.options) |options| state.setOptions(options) catch if (comptime @import("builtin").mode == .Debug) {
-                 @panic("Failed to set options");
-             };
-         }
- 
--        // register error handler first so that other methods can stick error
--        // data in the context
-         state.setErrorFunc(ErrCtx, config.err.ctx, config.err.handler);
- 
-         if (comptime validate_options) {
-@@ -111,75 +122,57 @@ pub const State = opaque {
-     }
- 
-     /// Free a TCC compilation context
--    pub fn deinit(s: *State) void {
-+    pub fn deinit(s: *NativeState) void {
-         tcc_delete(s);
-     }
- 
-     /// Set `CONFIG_TCCDIR` at runtime
--    pub fn setLibPath(s: *State, path: [:0]const u8) void {
-+    pub fn setLibPath(s: *NativeState, path: [:0]const u8) void {
-         tcc_set_lib_path(s, path.ptr);
-     }
- 
-     /// Set error/warning display callback
--    pub fn setErrorFunc(s: *State, Context: type, errorOpaque: ?*Context, errorFunc: *const ErrorFunc(Context)) void {
-+    pub fn setErrorFunc(s: *NativeState, Context: type, errorOpaque: ?*Context, errorFunc: *const ErrorFunc(Context)) void {
-         tcc_set_error_func(s, errorOpaque, @ptrCast(errorFunc));
-     }
- 
-     /// Return error/warning callback
--    pub fn getErrorFunc(s: *State) ?*const ErrorFunc(anyopaque) {
-+    pub fn getErrorFunc(s: *NativeState) ?*const ErrorFunc(anyopaque) {
-         return tcc_get_error_func(s);
-     }
- 
-     /// Return error/warning callback opaque pointer
--    pub fn getErrorOpaque(s: *State) ?*anyopaque {
-+    pub fn getErrorOpaque(s: *NativeState) ?*anyopaque {
-         return tcc_get_error_opaque(s);
-     }
- 
-     /// Set options as from command line (multiple supported)
--    pub fn setOptions(s: *State, str: [:0]const u8) Error!void {
-+    pub fn setOptions(s: *NativeState, str: [:0]const u8) Error!void {
-         if (tcc_set_options(s, str.ptr) != 0) {
-             @branchHint(.unlikely);
-             return error.InvalidOptions;
-         }
-     }
- 
--    // ======================== Preprocessor ========================
--
--    /// Add include path
--    pub fn addIncludePath(s: *State, pathname: [:0]const u8) Error!void {
-+    pub fn addIncludePath(s: *NativeState, pathname: [:0]const u8) Error!void {
-         if (tcc_add_include_path(s, pathname.ptr) != 0) {
-             @branchHint(.unlikely);
-             return error.InvalidIncludePath;
-         }
-     }
- 
--    /// Add in system include path
--    pub fn addSysIncludePath(s: *State, pathname: [:0]const u8) Error!void {
-+    pub fn addSysIncludePath(s: *NativeState, pathname: [:0]const u8) Error!void {
-         if (tcc_add_sysinclude_path(s, pathname.ptr) != 0) {
-             @branchHint(.unlikely);
-             return error.InvalidIncludePath;
-         }
-     }
- 
--    /// Define preprocessor symbol 'sym'. value can be NULL, sym can be "sym=val"
--    ///
--    /// ```c
--    /// #define sym value
--    /// ```
--    pub fn defineSymbol(s: *State, sym: [:0]const u8, value: [:0]const u8) void {
-+    pub fn defineSymbol(s: *NativeState, sym: [:0]const u8, value: [:0]const u8) void {
-         tcc_define_symbol(s, sym.ptr, value.ptr);
-     }
- 
--    /// Define multiple preprocessor symbols with comptime-known values.
--    /// ## Example
--    /// ```zig
--    /// const state = TCC.State.init() catch @panic("ahhh");
--    /// state.defineSymbols(.{
--    ///     .foo = "bar",
--    ///     .baz = 42, // ints will be stringified to "42"
--    /// });
--    /// ```
--    pub fn defineSymbolsComptime(s: *State, symbols: anytype) void {
-+    pub fn defineSymbolsComptime(s: *NativeState, symbols: anytype) void {
-         const info = @typeInfo(@TypeOf(symbols));
-         var buf: [256]u8 = undefined;
- 
-@@ -200,86 +193,53 @@ pub const State = opaque {
-         }
-     }
- 
--    /// Undefine preprocess symbol 'sym'
--    ///
--    /// ```c
--    /// #undef sym
--    /// ```
--    pub fn undefineSymbol(s: *State, sym: [:0]const u8) void {
-+    pub fn undefineSymbol(s: *NativeState, sym: [:0]const u8) void {
-         tcc_undefine_symbol(s, sym.ptr);
-     }
- 
--    // ======================== Compiling ========================
--
--    /// Add a file (C file, dll, object, library, ld script).
--    ///
--    /// ## Errors
--    /// - File not found
--    /// - Syntax/formatting error
--    pub fn addFile(s: *State, filename: [:0]const u8) Error!void {
-+    pub fn addFile(s: *NativeState, filename: [:0]const u8) Error!void {
-         if (tcc_add_file(s, filename.ptr) != 0) {
-             @branchHint(.unlikely);
-             return error.CompileError;
-         }
-     }
- 
--    /// Compile a string containing a C source.
--    pub fn compileString(s: *State, buf: [:0]const u8) Error!void {
-+    pub fn compileString(s: *NativeState, buf: [:0]const u8) Error!void {
-         if (tcc_compile_string(s, buf.ptr) != 0) {
-             @branchHint(.unlikely);
-             return error.CompileError;
-         }
-     }
- 
--    // ======================== Linking Commands ========================
--
--    /// Set output type. MUST BE CALLED before any compilation
--    pub fn setOutputType(s: *State, outputType: OutputFormat) Error!void {
-+    pub fn setOutputType(s: *NativeState, outputType: OutputFormat) Error!void {
-         if (tcc_set_output_type(s, @intFromEnum(outputType)) == -1) {
-             @branchHint(.unlikely);
-             return error.InvalidOutputType;
-         }
-     }
- 
--    /// Add a library. Equivalent to `-Lpath` option
--    pub fn addLibraryPath(s: *State, pathname: [:0]const u8) Error!void {
-+    pub fn addLibraryPath(s: *NativeState, pathname: [:0]const u8) Error!void {
-         if (tcc_add_library_path(s, pathname.ptr) != 0) {
-             @branchHint(.unlikely);
-             return error.InvalidLibraryPath;
-         }
-     }
- 
--    /// Add a library. The library name is the same as the argument of the `-l` option
--    pub fn addLibrary(s: *State, libraryname: [:0]const u8) Error!void {
-+    pub fn addLibrary(s: *NativeState, libraryname: [:0]const u8) Error!void {
-         if (tcc_add_library(s, libraryname.ptr) != 0) {
-             @branchHint(.unlikely);
-             return error.InvalidLibraryPath;
-         }
-     }
- 
--    /// Add a symbol to the compiled program
--    pub fn addSymbol(s: *State, name: [:0]const u8, val: *const anyopaque) Error!void {
-+    pub fn addSymbol(s: *NativeState, name: [:0]const u8, val: *const anyopaque) Error!void {
-         if (tcc_add_symbol(s, name.ptr, val) != 0) {
-             @branchHint(.unlikely);
-             return error.InvalidSymbol;
-         }
-     }
- 
--    /// Add multiple symbols to the compiled program.
--    ///
--    /// ## Example
--    /// ```zig
--    /// const state = TCC.State.init() catch @panic("ahhh");
--    /// fn add(a: c_int, b: c_int) callconv(.C) c_int {
--    ///     return a + b;
--    /// }
--    /// extern "c" fn sub(a: c_int, b: c_int) callconv(.C) c_int;
--    /// state.addSymbolsComptime(.{
--    ///     .add = add,
--    ///     .sub = sub,
--    /// }) catch @panic("Failed to add symbols");
--    /// ```
--    pub fn addSymbolsComptime(s: *State, symbols: anytype) Error!void {
-+    pub fn addSymbolsComptime(s: *NativeState, symbols: anytype) Error!void {
-         const info = @typeInfo(@TypeOf(symbols));
-         inline for (info.@"struct".fields) |field| {
-             const value = @field(symbols, field.name);
-@@ -287,27 +247,18 @@ pub const State = opaque {
-         }
-     }
- 
--    /// Output an executable, library or object file. DO NOT call `relocate` before.
--    pub fn outputFile(s: *State, filename: [:0]const u8) Error!void {
-+    pub fn outputFile(s: *NativeState, filename: [:0]const u8) Error!void {
-         if (tcc_output_file(s, filename.ptr) == -1) {
-             @branchHint(.unlikely);
-             return error.OutputError;
-         }
-     }
- 
--    /// Link and run `main()` function and return its value. DO NOT call `relocate` before.
--    /// Returns the status code returned by the program's `main()` function.
--    pub fn run(s: *State, argc: c_int, argv: [*:0]const [*:0]const u8) c_int {
-+    pub fn run(s: *NativeState, argc: c_int, argv: [*:0]const [*:0]const u8) c_int {
-         return tcc_run(s, argc, argv);
-     }
- 
--    /// Do all relocations (needed before using `getSymbol`)
--    ///
--    /// Possible values for `ptr`:
--    /// - `TCC_RELOCATE_AUTO`: Allocate and manage memory internally
--    /// - `NULL`: return required memory size for the step below
--    /// - memory address: copy code to memory passed by the caller
--    pub fn relocate(s: *State, ptr: ?*anyopaque) Error!usize {
-+    pub fn relocate(s: *NativeState, ptr: ?*anyopaque) Error!usize {
-         const size = tcc_relocate(s, ptr);
-         if (size < 0) {
-             @branchHint(.unlikely);
-@@ -316,13 +267,11 @@ pub const State = opaque {
-         return @intCast(size);
-     }
- 
--    /// Return symbol value or NULL if not found
--    pub fn getSymbol(s: *State, name: [:0]const u8) ?*Symbol {
-+    pub fn getSymbol(s: *NativeState, name: [:0]const u8) ?*Symbol {
-         return @ptrCast(tcc_get_symbol(s, name.ptr));
-     }
- 
--    /// Return symbol value or NULL if not found
--    pub fn listSymbols(s: *State, ctx: ?*anyopaque, symbolCb: ?*const Symbol.Callback) void {
-+    pub fn listSymbols(s: *NativeState, ctx: ?*anyopaque, symbolCb: ?*const Symbol.Callback) void {
-         tcc_list_symbols(s, ctx, symbolCb);
-     }
- };
 diff --git a/src/env.zig b/src/env.zig
-index 41364f1..6029059 100644
+index 3e2881a..8f4b05b 100644
 --- a/src/env.zig
 +++ b/src/env.zig
-@@ -21,10 +21,11 @@ pub const isPosix = !isWindows and !isWasm;
- pub const isDebug = @import("builtin").mode == .Debug;
- pub const isTest = @import("builtin").is_test;
- pub const isLinux = @import("builtin").target.os.tag == .linux;
-+pub const isAndroid = isLinux and @import("builtin").target.abi == .android;
- pub const isAarch64 = @import("builtin").target.cpu.arch.isAARCH64();
- pub const isX86 = @import("builtin").target.cpu.arch.isX86();
- pub const isX64 = @import("builtin").target.cpu.arch == .x86_64;
+@@ -17,10 +17,11 @@ pub const isPosix = !isWindows and !isWasm;
+ pub const isDebug = builtin.mode == .Debug;
+ pub const isTest = builtin.is_test;
+ pub const isLinux = builtin.target.os.tag == .linux;
++pub const isAndroid = isLinux and builtin.target.abi == .android;
+ pub const isAarch64 = builtin.target.cpu.arch.isAARCH64();
+ pub const isX86 = builtin.target.cpu.arch.isX86();
+ pub const isX64 = builtin.target.cpu.arch == .x86_64;
 -pub const isMusl = builtin.target.abi.isMusl();
 +pub const isMusl = !isAndroid and builtin.target.abi.isMusl();
- pub const allow_assert = isDebug or isTest or std.builtin.Mode.ReleaseSafe == @import("builtin").mode;
+ pub const allow_assert = isDebug or isTest or std.builtin.Mode.ReleaseSafe == builtin.mode;
+ pub const ci_assert = isDebug or isTest or enable_asan or (std.builtin.Mode.ReleaseSafe == builtin.mode and is_canary);
  pub const show_crash_trace = isDebug or isTest or enable_asan;
- /// All calls to `@export` should be gated behind this check, so that code
-@@ -84,6 +85,8 @@ pub const OperatingSystem = enum {
+@@ -85,6 +86,8 @@ pub const OperatingSystem = enum {
          .{ "Linux", .linux },
          .{ "linux-gnu", .linux },
          .{ "gnu/linux", .linux },
@@ -1774,10 +1184,19 @@ index 41364f1..6029059 100644
      });
  
 diff --git a/src/fs.zig b/src/fs.zig
-index 28ae78a..fd5aac1 100644
+index 29e3a52..0c58f2d 100644
 --- a/src/fs.zig
 +++ b/src/fs.zig
-@@ -815,9 +815,9 @@ pub const FileSystem = struct {
+@@ -565,7 +565,7 @@ pub const FileSystem = struct {
+                     return value;
+                 },
+                 .mac => "/private/tmp",
+-                else => "/tmp",
++                else => if (Environment.isAndroid) "/data/data/com.termux/files/usr/tmp" else "/tmp",
+             };
+         }
+ 
+@@ -795,9 +795,9 @@ pub const FileSystem = struct {
                  Limit.handles_before = limit;
                  file_limit = limit.max;
                  Limit.handles = file_limit;
@@ -1791,23 +1210,21 @@ index 28ae78a..fd5aac1 100644
                  else
                      // apparently, requesting too high of a number can cause other processes to not start.
 diff --git a/src/install/npm.zig b/src/install/npm.zig
-index b8e8c7b..1de6f2e 100644
+index 13bf44a..f22f8cb 100644
 --- a/src/install/npm.zig
 +++ b/src/install/npm.zig
-@@ -765,8 +765,9 @@ pub const Libc = enum(u8) {
+@@ -729,8 +729,7 @@ pub const Libc = enum(u8) {
          return .{ .added = this, .removed = .none };
      }
  
 -    // TODO:
 -    pub const current: Libc = @intFromEnum(glibc);
-+    // Android uses Bionic (not glibc or musl), but for npm package resolution
-+    // purposes, we report as glibc since most native npm packages only know glibc/musl.
 +    pub const current: Libc = @enumFromInt(if (bun.Environment.isAndroid) glibc else if (bun.Environment.isMusl) musl else glibc);
  
-     const JSC = bun.JSC;
-     pub fn jsFunctionLibcIsMatch(globalObject: *JSC.JSGlobalObject, callframe: *JSC.CallFrame) bun.JSError!JSC.JSValue {
+     const jsc = bun.jsc;
+     pub fn jsFunctionLibcIsMatch(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
 diff --git a/src/linux.zig b/src/linux.zig
-index 4187c86..51669c0 100644
+index 86623f2..d602e94 100644
 --- a/src/linux.zig
 +++ b/src/linux.zig
 @@ -73,6 +73,11 @@ pub fn ioctl_ficlone(dest_fd: bun.FileDescriptor, srcfd: bun.FileDescriptor) usi
@@ -1823,10 +1240,10 @@ index 4187c86..51669c0 100644
          std.os.linux.syscall6(
              .epoll_pwait2,
 diff --git a/src/sys.zig b/src/sys.zig
-index 5f14200..5d94cc7 100644
+index e34ebf0..f06ee2e 100644
 --- a/src/sys.zig
 +++ b/src/sys.zig
-@@ -2095,7 +2095,7 @@ pub fn pread(fd: bun.FileDescriptor, buf: []u8, offset: i64) Maybe(usize) {
+@@ -1910,7 +1910,7 @@ pub fn pread(fd: bun.FileDescriptor, buf: []u8, offset: i64) Maybe(usize) {
      }
  }
  
@@ -1836,10 +1253,10 @@ index 5f14200..5d94cc7 100644
  else
      syscall.pwrite;
 diff --git a/src/test/recover.zig b/src/test/recover.zig
-index 92f881c..1113bd3 100644
+index dda3c02..1c68df3 100644
 --- a/src/test/recover.zig
 +++ b/src/test/recover.zig
-@@ -9,7 +9,7 @@ const builtin = @import("builtin");
+@@ -6,7 +6,7 @@
  
  const Context = if (builtin.os.tag == .windows)
      std.os.windows.CONTEXT
@@ -1848,7 +1265,7 @@ index 92f881c..1113bd3 100644
      musl.jmp_buf
  else
      std.c.ucontext_t;
-@@ -98,7 +98,7 @@ const musl = struct {
+@@ -92,7 +92,7 @@ const musl = struct {
  inline fn getContext(ctx: *Context) void {
      if (builtin.os.tag == .windows) {
          std.os.windows.ntdll.RtlCaptureContext(ctx);
@@ -1857,7 +1274,7 @@ index 92f881c..1113bd3 100644
          _ = musl.setjmp(ctx);
      } else {
          _ = std.debug.getContext(ctx);
-@@ -108,7 +108,7 @@ inline fn getContext(ctx: *Context) void {
+@@ -102,7 +102,7 @@ inline fn getContext(ctx: *Context) void {
  inline fn setContext(ctx: *const Context) noreturn {
      if (builtin.os.tag == .windows) {
          RtlRestoreContext(ctx, null);
@@ -1867,22 +1284,13 @@ index 92f881c..1113bd3 100644
      } else {
          setcontext(ctx);
 diff --git a/src/workaround_missing_symbols.zig b/src/workaround_missing_symbols.zig
-index 7d8ef7c..0d8f40f 100644
+index 8cb7201..53a5b7e 100644
 --- a/src/workaround_missing_symbols.zig
 +++ b/src/workaround_missing_symbols.zig
-@@ -1,6 +1,28 @@
- const std = @import("std");
- 
+@@ -1,4 +1,19 @@
 -pub const linux = struct {
 +pub const linux = if (bun.Environment.isAndroid) struct {
-+    // Android/Bionic has modern stat implementations and does not need
-+    // the glibc compatibility symbol overrides. We @extern to Bionic's libc symbols.
 +    pub const memmem = bun.c.memmem;
-+
-+    // TLS p_align=64 fix is now in android_tls_align.s (assembly file).
-+    // See that file for rationale. The assembly approach works because it
-+    // bypasses the NDK compiler's emulated TLS and creates a real .tbss
-+    // section with sh_addralign=64.
 +
 +    pub const lstat = blk: {
 +        const T = *const fn ([*:0]const u8, *std.os.linux.Stat) callconv(.C) c_int;
