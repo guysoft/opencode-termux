@@ -20,6 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
 HOST_BUN="${HOST_BUN:-bun}"
+if ! command -v "$HOST_BUN" >/dev/null 2>&1 && [ -x "${HOME}/.bun/bin/bun" ]; then
+    HOST_BUN="${HOME}/.bun/bin/bun"
+fi
 
 echo "=== Building OpenCode v${OPENCODE_VERSION} for Android aarch64 ==="
 
@@ -29,6 +32,21 @@ if [ ! -d "$OPENCODE_SRC/.git" ]; then
     git clone --depth 1 --branch "v${OPENCODE_VERSION}" https://github.com/anomalyco/opencode.git "$OPENCODE_SRC"
 else
     echo ">>> OpenCode source exists at $OPENCODE_SRC"
+fi
+
+# Keep the Android-specific UX additions isolated from upstream source.  The
+# patch only exposes the upstream --yolo behavior in --help; it does not alter
+# the permission semantics (which remain equivalent to --auto).
+OPENCODE_PATCH="$REPO_ROOT/patches/opencode/termux-yolo.patch"
+if [ -f "$OPENCODE_PATCH" ]; then
+    echo ">>> Applying OpenCode Termux patch..."
+    cd "$OPENCODE_SRC"
+    if ! git apply --check "$OPENCODE_PATCH" 2>/dev/null; then
+        echo "    Patch already applied or does not apply cleanly, skipping"
+    else
+        git apply "$OPENCODE_PATCH"
+        echo "    Patch applied successfully"
+    fi
 fi
 
 OPENCODE_PKG="$OPENCODE_SRC/packages/opencode"
@@ -48,7 +66,7 @@ fi
 
 # Find ARM64 libopentui.so
 # build.zig installs to ../lib/{target} relative to the zig dir
-ARM64_LIBOPENTUI="$OPENTUI_SRC/packages/core/src/lib/aarch64-linux-android/libopentui.so"
+ARM64_LIBOPENTUI="$OPENTUI_SRC/packages/core/src/lib/${ANDROID_TRIPLE}.${ANDROID_API}/libopentui.so"
 if [ ! -f "$ARM64_LIBOPENTUI" ]; then
     echo "ERROR: ARM64 libopentui.so not found at $ARM64_LIBOPENTUI"
     echo "       Run scripts/build-opentui.sh first."
@@ -98,6 +116,7 @@ cd "$OPENCODE_PKG"
 
 OPENCODE_VERSION="$OPENCODE_VERSION" \
     ANDROID_BUN="$ANDROID_BUN" \
+    ANDROID_OPENTUI="$ARM64_LIBOPENTUI" \
     OUTPUT_DIR="$DIST_DIR" \
     OPENCODE_DIR="$OPENCODE_PKG" \
     "$HOST_BUN" run "$BUILD_SCRIPT_LOCAL"

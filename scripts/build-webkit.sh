@@ -67,7 +67,7 @@ cmake \
     -DCMAKE_CXX_FLAGS="$DEFAULT_CFLAGS -fno-exceptions -fno-c++-static-destructors" \
     -DCMAKE_C_FLAGS_RELEASE="$RELEASE_FLAGS" \
     -DCMAKE_CXX_FLAGS_RELEASE="$RELEASE_FLAGS" \
-    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -llog" \
     -DICU_ROOT="$DEPS_PREFIX" \
     -DICU_INCLUDE_DIRS="$DEPS_PREFIX/include" \
     "$WEBKIT_SRC"

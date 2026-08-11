@@ -18,6 +18,7 @@ import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 // These are set by the build-opencode.sh wrapper script
 const OPENCODE_DIR = process.env.OPENCODE_DIR || (() => { throw new Error("OPENCODE_DIR env var not set") })()
 const ANDROID_BUN = process.env.ANDROID_BUN || (() => { throw new Error("ANDROID_BUN env var not set") })()
+const ANDROID_OPENTUI = process.env.ANDROID_OPENTUI || (() => { throw new Error("ANDROID_OPENTUI env var not set") })()
 const OUTPUT_DIR = process.env.OUTPUT_DIR || (() => { throw new Error("OUTPUT_DIR env var not set") })()
 
 // Validate Android bun exists
@@ -28,7 +29,7 @@ if (!fs.existsSync(ANDROID_BUN)) {
 
 process.chdir(OPENCODE_DIR)
 
-const VERSION = process.env.OPENCODE_VERSION || "1.3.13"
+const VERSION = process.env.OPENCODE_VERSION || "1.18.16"
 const CHANNEL = process.env.OPENCODE_CHANNEL || "latest"
 
 console.log(`Building OpenCode v${VERSION} (channel: ${CHANNEL}) for Android aarch64`)
@@ -119,7 +120,41 @@ try {
 }
 console.log(`Parser worker: ${parserWorkerResolved}`)
 
-const workerPath = "./src/cli/cmd/tui/worker.ts"
+// Android Bun currently does not return a usable `default` value for file-like
+// imports transplanted from a host standalone module graph. OpenTUI normally
+// performs one such import eagerly for parser.worker.js, which crashes before
+// the TUI starts. Make that eager lookup honor OTUI_ASSET_ROOT, just like all
+// of OpenTUI's other relocatable runtime assets.
+const opentuiCoreDir = path.dirname(parserWorkerResolved)
+let assetRootPatchCount = 0
+let assetRootReadyCount = 0
+for (const name of fs.readdirSync(opentuiCoreDir)) {
+  if (!/^chunk-bun-.*\.js$/.test(name)) continue
+  const file = path.join(opentuiCoreDir, name)
+  const source = fs.readFileSync(file, "utf8")
+  const patched = source
+    .replaceAll("{ useAssetRoot: false }", "{ useAssetRoot: true }")
+    .replaceAll(
+      "const root = process.env.OTUI_ASSET_ROOT;",
+      "const root = process.env.OTUI_ASSET_ROOT || '/data/data/com.termux/files/usr/libexec/opencode/opentui-assets';",
+    )
+    .replaceAll(
+      "return normalizeLoadedFilePath((await loadBundledFile()).default, metaUrl);",
+      "const loadedPath = (await loadBundledFile()).default; if (typeof loadedPath !== 'string') throw new Error(`OpenTUI bundled asset ${key} was not materialized (OTUI_ASSET_ROOT=${process.env.OTUI_ASSET_ROOT ?? ''})`); return normalizeLoadedFilePath(loadedPath, metaUrl);",
+    )
+  if (patched !== source) {
+    fs.writeFileSync(file, patched)
+    assetRootPatchCount++
+  }
+  if (patched.includes("{ useAssetRoot: true }")) assetRootReadyCount++
+}
+if (assetRootReadyCount === 0) {
+  throw new Error("OpenTUI parser worker asset-root patch did not match")
+}
+console.log(`OpenTUI external Android assets enabled (${assetRootPatchCount} newly patched chunk(s))`)
+
+// v1.18 moved the worker out of cli/cmd/tui into cli/tui.
+const workerPath = "./src/cli/tui/worker.ts"
 
 const bunfsRoot = "/$bunfs/root/"
 const workerRelativePath = path.relative(OPENCODE_DIR, parserWorkerResolved).replaceAll("\\", "/")
@@ -279,21 +314,14 @@ console.log(`Module graph: trailer at ${trailerPosInMg}, offsets at ${mgOffsetsS
 console.log(`byte_count=${byteCount}, modules_ptr=(${modOff},${modLen}), entry_id=${entryId}`)
 console.log(`String data region: [0, ${modOff}), Module list: [${modOff}, ${modOff + modLen})`)
 
-// ---- Patch 1: Fix undici reference ----
-// The host bun bundler compiles `import "undici"` as a bare global reference `undici`.
-// Android bun v1.2.13 doesn't expose globalThis.undici, but it does expose `Undici`
-// (capital U, the moduleExports object). `__reExport` skips the "default" key anyway,
-// so the result is identical.
-//
-// This is a same-byte-count replacement: we search the entire string data region
-// for the pattern and replace in-place. No module struct parsing required.
+// Host Linux Bun emits a bare `undici` global, while Android Bun exposes the
+// same built-in namespace as `Undici`. This is independent of graph format and
+// remains necessary even when host and target Bun versions match exactly.
 const UNDICI_SEARCH  = Buffer.from('__reExport(exports_Undici, undici)')
 const UNDICI_REPLACE = Buffer.from('__reExport(exports_Undici, Undici)')
-console.log(`\nPatch 1: Replacing undici->Undici in string data (same size, no offset changes)`)
-
+console.log(`\nAndroid patch: Replacing undici->Undici (same size, no offset changes)`)
 let undiciPatchCount = 0
 let searchPos = 0
-// Search only within the string data region [0, modOff)
 const strDataRegion = mgBuf.slice(0, modOff)
 while (true) {
   const pos = strDataRegion.indexOf(UNDICI_SEARCH, searchPos)
@@ -304,7 +332,7 @@ while (true) {
   searchPos = pos + UNDICI_SEARCH.length
 }
 if (undiciPatchCount === 0) {
-  console.error("WARNING: __reExport(exports_Undici, undici) not found — skipping Patch 1")
+  console.error("WARNING: Android undici reference not found")
 } else {
   console.log(`  Patched ${undiciPatchCount} occurrence(s)`)
 }
@@ -343,6 +371,28 @@ totalView.setUint32(4, Math.floor(newTotalByteCount / 0x100000000), true)
 const androidOutputPath = path.join(OUTPUT_DIR, "opencode")
 await Bun.write(androidOutputPath, output)
 fs.chmodSync(androidOutputPath, 0o755)
+
+// Materialize all OpenTUI file-like imports on the real Android filesystem.
+// OTUI_ASSET_ROOT uses package-relative keys, so preserve those paths exactly.
+const assetsRoot = path.join(OUTPUT_DIR, "opentui-assets")
+fs.rmSync(assetsRoot, { recursive: true, force: true })
+fs.mkdirSync(path.join(assetsRoot, "@opentui/core"), { recursive: true })
+fs.copyFileSync(parserWorkerResolved, path.join(assetsRoot, "@opentui/core/parser.worker.js"))
+fs.cpSync(path.join(opentuiCoreDir, "assets"), path.join(assetsRoot, "@opentui/core/assets"), { recursive: true })
+
+const treeSitterWasm = require.resolve("web-tree-sitter/tree-sitter.wasm")
+fs.mkdirSync(path.join(assetsRoot, "web-tree-sitter"), { recursive: true })
+fs.copyFileSync(treeSitterWasm, path.join(assetsRoot, "web-tree-sitter/tree-sitter.wasm"))
+
+const nativeAssetDir = path.join(assetsRoot, "@opentui/core-linux-arm64")
+fs.mkdirSync(nativeAssetDir, { recursive: true })
+fs.copyFileSync(ANDROID_OPENTUI, path.join(nativeAssetDir, "libopentui.so"))
+// The host standalone bundle constant-folds process.arch as x64. Preserve that
+// asset key as an alias, but place the Android ARM64 library behind it.
+const hostNativeAssetDir = path.join(assetsRoot, "@opentui/core-linux-x64")
+fs.mkdirSync(hostNativeAssetDir, { recursive: true })
+fs.copyFileSync(ANDROID_OPENTUI, path.join(hostNativeAssetDir, "libopentui.so"))
+console.log(`OpenTUI runtime assets: ${assetsRoot}`)
 
 console.log(`\nAndroid standalone binary: ${androidOutputPath}`)
 console.log(`Size: ${(outputSize / 1024 / 1024).toFixed(1)} MB`)

@@ -1,0 +1,28 @@
+diff --git a/packages/opencode/src/cli/cmd/tui.ts b/packages/opencode/src/cli/cmd/tui.ts
+index c01e893..ed18b43 100644
+--- a/packages/opencode/src/cli/cmd/tui.ts
++++ b/packages/opencode/src/cli/cmd/tui.ts
+@@ -112,8 +112,8 @@ export const TuiThreadCommand = cmd({
+       })
+       .option("yolo", {
+         type: "boolean",
+-        hidden: true,
+         default: false,
++        describe: "auto-approve permissions that are not explicitly denied (dangerous!)",
+       })
+       .option("dangerously-skip-permissions", {
+         type: "boolean",
+diff --git a/packages/opencode/src/cli/cmd/run.ts b/packages/opencode/src/cli/cmd/run.ts
+index 4afb4b2..178806c 100644
+--- a/packages/opencode/src/cli/cmd/run.ts
++++ b/packages/opencode/src/cli/cmd/run.ts
+@@ -267,8 +267,8 @@ export const RunCommand = cmd({
+       })
+       .option("yolo", {
+         type: "boolean",
+-        hidden: true,
+         default: false,
++        describe: "auto-approve permissions that are not explicitly denied (dangerous!)",
+       })
+       .option("dangerously-skip-permissions", {
+         type: "boolean",

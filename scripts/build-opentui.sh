@@ -18,15 +18,13 @@ echo "=== Building libopentui.so for Android aarch64 ==="
 
 # Clone opentui if needed
 if [ ! -d "$OPENTUI_SRC/.git" ]; then
-    echo ">>> Cloning opentui..."
-    git clone --depth 1 https://github.com/anomalyco/opentui.git "$OPENTUI_SRC"
+    echo ">>> Cloning opentui v${OPENTUI_VERSION}..."
+    git clone --depth 1 --branch "v${OPENTUI_VERSION}" https://github.com/anomalyco/opentui.git "$OPENTUI_SRC"
 else
     echo ">>> opentui source exists at $OPENTUI_SRC"
 fi
 
-# Apply Android libc linking patch
-# Without this patch, the .so won't have NEEDED: libc.so, and Android's
-# dlopen() will fail because it can't resolve symbols like getauxval.
+# Avoid Linux-only dl/pthread linker flags for the Android target.
 OPENTUI_PATCH="$REPO_ROOT/patches/opentui/android-libc-link.patch"
 if [ -f "$OPENTUI_PATCH" ]; then
     echo ">>> Applying opentui Android patch..."
@@ -49,15 +47,25 @@ fi
 echo ">>> Building with Zig (target: aarch64-linux-android)..."
 cd "$OPENTUI_ZIG_DIR"
 
+ZIG_LIBC_CONFIG="$OPENTUI_ZIG_DIR/.zig-android-libc.conf"
+sed \
+    -e "s|@NDK_SYSROOT@|$NDK_SYSROOT|g" \
+    -e "s|@ANDROID_TRIPLE@|$ANDROID_TRIPLE|g" \
+    -e "s|@ANDROID_API@|$ANDROID_API|g" \
+    "$REPO_ROOT/configs/zig-android-libc.conf.in" > "$ZIG_LIBC_CONFIG"
+trap 'rm -f "$ZIG_LIBC_CONFIG"' EXIT
+
 "$ZIG_BIN" build \
-    -Dtarget=aarch64-linux-android \
+    -Dtarget=aarch64-linux-android.24 \
     -Doptimize=ReleaseSafe \
+    --libc "$ZIG_LIBC_CONFIG" \
+    --sysroot "$NDK_SYSROOT" \
     --prefix . 2>&1
 
 # The build.zig installs to dest_dir="../lib/{output_name}" relative to
 # the --prefix dir.  With --prefix=. (= OPENTUI_ZIG_DIR), the .so ends
-# up one directory above: packages/core/src/lib/aarch64-linux-android/
-LIBOPENTUI="$OPENTUI_ZIG_DIR/../lib/aarch64-linux-android/libopentui.so"
+# up one directory above: packages/core/src/lib/aarch64-linux-android.24/
+LIBOPENTUI="$OPENTUI_ZIG_DIR/../lib/${ANDROID_TRIPLE}.${ANDROID_API}/libopentui.so"
 if [ ! -f "$LIBOPENTUI" ]; then
     echo "ERROR: libopentui.so not found"
     echo "  Expected at: $LIBOPENTUI"
@@ -78,7 +86,7 @@ if readelf -d "$LIBOPENTUI" 2>/dev/null | grep -q "NEEDED.*libc.so"; then
 else
     echo "ERROR: libopentui.so is missing NEEDED: libc.so dependency"
     echo "       Android dlopen() will fail without this."
-    echo "       Ensure ANDROID_NDK_HOME is set and the opentui patch was applied."
+    echo "       Ensure ANDROID_NDK_HOME and its NDK sysroot are configured."
     readelf -d "$LIBOPENTUI" 2>/dev/null | grep NEEDED || echo "       (no NEEDED entries found)"
     exit 1
 fi
