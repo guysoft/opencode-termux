@@ -9,7 +9,7 @@ on:
       opencode_version:
         description: 'OpenCode version to build'
         required: false
-        default: '1.17.10'
+        default: '1.18.30'
       create_prerelease:
         description: 'Create a GitHub pre-release with the built artifacts'
         required: false
@@ -22,7 +22,7 @@ on:
 
 env:
   BUN_VERSION: "1.2.13"
-  OPENCODE_VERSION: "1.17.10"
+  OPENCODE_VERSION: "1.18.30"
   ANDROID_API: "24"
   ANDROID_NDK_VERSION: "28.1.13356709"
   WEBKIT_COMMIT: "017930ebf915121f8f593bef61cbbca82d78132d"
@@ -32,12 +32,12 @@ env:
   # golem10 has 15GB RAM — limit parallelism to avoid OOM during WebKit link
   JOBS: "4"
   # Use the large spindle drive for working directory
-  WORK_DIR: "/mnt/spindrive/opencode-build"
+  WORK_DIR: "${{ github.workspace }}/opencode-build"
 
 jobs:
   build:
     name: Build Android aarch64
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 hours for full build
     permissions:
       contents: write   # required to create GitHub Releases
@@ -55,7 +55,7 @@ jobs:
         run: |
           mkdir -p "$WORK_DIR"
           echo "Work directory: $WORK_DIR"
-          df -h /mnt/spindrive
+          df -h /
 
       # =============================================
       # Install build dependencies
@@ -429,4 +429,4 @@ jobs:
           # FileNotFound errors in the translate-c output cache.
           rm -rf "${WORK_DIR}/bun-build/cache/zig"
           echo "Cleaned up intermediate files"
-          df -h /mnt/spindrive
+          df -h /
