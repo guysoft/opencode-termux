@@ -17,9 +17,12 @@ ZIG_BIN="${ZIG_BIN:-zig}"
 echo "=== Building libopentui.so for Android aarch64 ==="
 
 # Clone opentui if needed
+# Pin to the tag matching the @opentui/core version bundled by the OpenCode
+# release (v1.18.3 bundles @opentui/core@0.4.3). Cloning HEAD would build
+# 0.5.x, whose native ABI does not match the 0.4.3 JS bindings.
 if [ ! -d "$OPENTUI_SRC/.git" ]; then
-    echo ">>> Cloning opentui..."
-    git clone --depth 1 https://github.com/anomalyco/opentui.git "$OPENTUI_SRC"
+    echo ">>> Cloning opentui (v${OPENTUI_VERSION})..."
+    git clone --depth 1 --branch "v${OPENTUI_VERSION}" https://github.com/anomalyco/opentui.git "$OPENTUI_SRC"
 else
     echo ">>> opentui source exists at $OPENTUI_SRC"
 fi

@@ -101,22 +101,19 @@ Notes:
 
 ### Option 1: Standalone binary (easiest)
 
-> **Note:** The zip now contains a wrapper script (`opencode`), the main binary
-> (`opencode.bin`), and native libraries (`.so` files). All files must be
-> installed to their proper locations.
+> **Note:** The zip contains a single self-contained `opencode` binary (~200MB).
+> All native libraries (`libopentui.so`, etc.) are embedded, so no extra files
+> need to be installed.
 
 ```bash
 # Download the latest "opencode-*-android-aarch64.zip" from
-#   https://github.com/guysoft/opencode-termux/releases/latest
+#   https://github.com/qioceky/opencode-termux/releases/tag/v1.18.31
+# (pending upstream merge — the canonical "latest" is the fork above)
 # Then install:
 
-mkdir -p $PREFIX/libexec/opencode $PREFIX/lib
 unzip opencode-*-android-aarch64.zip
 mv opencode $PREFIX/bin/opencode
 chmod +x $PREFIX/bin/opencode
-mv opencode.bin $PREFIX/libexec/opencode/opencode.bin
-chmod +x $PREFIX/libexec/opencode/opencode.bin
-mv libtagfix.so libc++_shared.so libopentui.so $PREFIX/lib/
 
 # Install required dependency
 pkg install ripgrep
@@ -128,18 +125,28 @@ opencode
 ### Option 2: Pacman package (recommended if using pacman)
 
 ```bash
-curl -LO https://github.com/guysoft/opencode-termux/releases/latest/download/opencode-aarch64.pkg.tar.xz
-pacman -U opencode-*-aarch64.pkg.tar.xz
+curl -LO https://github.com/qioceky/opencode-termux/releases/latest/download/opencode-1.18.31-1-aarch64.pkg.tar.xz
+pacman -U opencode-1.18.31-1-aarch64.pkg.tar.xz
 opencode
 ```
+
+> If pacman complains about a missing/writable keyring, initialize it first:
+> ```bash
+> pacman-key --init
+> pacman-key --populate
+> ```
 
 ### Option 3: Deb package
 
 ```bash
-curl -LO https://github.com/guysoft/opencode-termux/releases/latest/download/opencode-aarch64.deb
-dpkg -i opencode-*-aarch64.deb
+curl -LO https://github.com/qioceky/opencode-termux/releases/latest/download/opencode_1.18.31_aarch64.deb
+pkg install ./opencode_1.18.31_aarch64.deb
 opencode
 ```
+
+> Use the exact filename — do NOT glob (`opencode_*_aarch64.deb`): if an older
+> OpenCode `.deb` is still in your working directory, pkg/dpkg will try to install
+> both and the unpack can fail. Delete old `.deb` files first if you have any.
 
 The pacman and deb packages automatically install `ripgrep` as a dependency.
 
@@ -170,9 +177,10 @@ opencode-termux/
     bun/android-support.patch      # 33 files, Bun Android/aarch64 support
     webkit/android-support.patch   # 5 files, WebKit/JSC Android fixes
     zig/posix-android-sigaction.patch  # Zig stdlib sigaction/sigprocmask fix
-    opentui/android-libc-link.patch  # Link NDK libc.so for Android dlopen
+    opentui/android-libc-link.patch  # Android build: skip dl/pthread, link NDK libc.so + setLibCFile
   scripts/
     apply-patches.sh               # Clone upstream repos + apply patches
+    env.sh                         # Version pins (OpenCode, opentui, Bun, etc.)
     build-icu.sh                   # Cross-compile ICU 75.1 for Android
     build-webkit.sh                # Cross-compile WebKit/JSC for Android
     build-tinycc.sh                # Cross-compile TinyCC (libtcc.a) for Android
@@ -191,7 +199,7 @@ opencode-termux/
 
 ## What Was Done
 
-This project got OpenCode (a ~136MB standalone binary built on Bun + WebKit/JSC) running on Android/Termux, which required:
+This project got OpenCode (a ~195MB standalone binary built on Bun + WebKit/JSC) running on Android/Termux, which required:
 
 1. **Cross-compiling Bun v1.2.13 for Android/aarch64** -- Bun has zero Android support. We patched 33 files across the build system (CMake, Zig), syscall layer, Bionic libc compatibility, JSC/JIT configuration, and linker settings.
 
@@ -199,7 +207,7 @@ This project got OpenCode (a ~136MB standalone binary built on Bun + WebKit/JSC)
 
 3. **Fixing Zig's stdlib for Android/Bionic** -- Zig's `sigaction()` and `sigprocmask()` pass a 152-byte struct through Bionic's libc which expects 32 bytes, causing silent memory corruption. Patched to use raw syscalls on Android.
 
-4. **Building libopentui.so for Android** -- OpenCode's TUI renderer depends on OpenTUI, which needed a patch to link Android NDK's libc.so stub so `dlopen()` can resolve symbols at runtime.
+4. **Building libopentui.so for Android** -- OpenCode's TUI renderer depends on OpenTUI, which needed a patch to (a) skip linking `dl`/`pthread` (already inside Bionic on Android), (b) link the Android NDK's `libc.so` stub so `dlopen()` can resolve symbols at runtime, and (c) provision a libc via `setLibCFile()` so Zig can compile for the Android target (Zig only bundles glibc/musl).
 
 5. **Standalone binary surgery** -- Since `bun build --compile` has no Android cross-compilation target, we build a host standalone binary, extract the serialized module graph, and transplant it onto the Android Bun binary. This required understanding and matching the binary format across Bun versions (36-byte vs 52-byte module struct stride).
 
@@ -211,15 +219,15 @@ This project got OpenCode (a ~136MB standalone binary built on Bun + WebKit/JSC)
 
 ```
 Stage 1: ICU 75.1          ~5 min    (cross-compile for Android)
-Stage 2: WebKit/JSC        ~60-90 min (cross-compile, CACHED)
+Stage 2: WebKit/JSC        ~30-60 min (cross-compile, CACHED)
 Stage 3: TinyCC            ~1 min    (cross-compile libtcc.a)
 Stage 4: Bun binary        ~30-45 min (CMake + Ninja, CACHED)
-Stage 5: libopentui.so     ~2 min    (Zig build for aarch64-linux-android)
+Stage 5: libopentui.so     ~1 min    (Zig build for aarch64-linux-android)
 Stage 6: OpenCode bundle   ~30 sec   (bun build --compile, extract module graph)
 Stage 7: Packages          ~10 sec   (zip + pacman + deb)
 ```
 
-With warm caches (WebKit + Bun cached), CI runs complete in ~4 minutes.
+The GitHub Actions workflow runs these stages in one job. A full run on a 2-core/8GB runner with a swap file takes roughly an hour end-to-end; CI caches (ICU, WebKit, Bun) are restored via `actions/cache` when the build inputs are unchanged.
 
 ---
 
@@ -294,7 +302,10 @@ Bun has zero Android support. Every patch falls into one of these categories:
 
 ### OpenTUI Patch (1 file)
 
-- **Link NDK `libc.so` stub** -- On Android, the `.so` must have `NEEDED: libc.so` in its ELF headers so `dlopen()` can resolve symbols like `getauxval`. Zig doesn't bundle Android libc, so we directly add the NDK sysroot's `libc.so` stub as a link input.
+- **Android `build.zig` support** -- three changes to compile `libopentui.so` for `aarch64-linux-android`:
+  1. **Skip `dl`/`pthread`** -- Zig's `addNativeAudioDependencies` unconditionally links `dl` + `pthread` on `.linux`; on Android those live inside Bionic's libc, so the link fails ("unable to find dynamic system library 'dl'"). Guarded with `if (!is_android)`.
+  2. **Link NDK `libc.so` stub** -- the `.so` must carry `NEEDED: libc.so` in its ELF headers so `dlopen()` can resolve symbols like `getauxval`. We `addObjectFile()` the NDK sysroot's `libc.so` stub.
+  3. **Provision libc via `setLibCFile()`** -- Zig bundles only glibc/musl, so compiling for Android fails with "unable to provide libc for target". We write a libc file pointing at the NDK sysroot (include dirs + crt dir, read from `ANDROID_NDK_HOME` / `ANDROID_NDK_LIB_DIR` env) and feed it to the compile step.
 
 ---
 
@@ -302,7 +313,7 @@ Bun has zero Android support. Every patch falls into one of these categories:
 
 Since `bun build --compile` has no Android cross-compilation target, we use a manual approach:
 
-1. Use **host Bun (v1.3.2)** to `bun build --compile` OpenCode for the host platform
+1. Use **host Bun (v1.3.2)** to `bun build --compile` OpenCode for the host platform. Before bundling, run `bun install --os="*" --cpu="*" @opentui/core@...` (versions parsed from `bun.lock`) so every platform's optional-dependency variant is present — otherwise bundling fails to resolve e.g. `@opentui/core-win32-arm64`
 2. Extract the serialized **module graph** from the host standalone binary by locating the `\n---- Bun! ----\n` trailer and reading the `Offsets` struct
 3. Patch the module graph in-place (fix `undici` global reference)
 4. Before bundling, swap x86_64 `libopentui.so` with the ARM64 Android-built version, so it gets embedded in the module graph
@@ -311,8 +322,8 @@ Since `bun build --compile` has no Android cross-compilation target, we use a ma
 
 The standalone binary format:
 ```
-[Android Bun binary (~96 MB)]
-[Module graph bytes (~46 MB)]
+[Android Bun binary (~93 MB)]
+[Module graph bytes (~104 MB)]
 [total_byte_count as u64 LE (8 bytes)]
 ```
 
@@ -340,7 +351,7 @@ We can't use Bun 1.2.13 as host either, because OpenCode's monorepo uses `catalo
 
 | Issue | Severity | Details |
 |-------|----------|---------|
-| File watcher native module | Low | `@parcel/watcher` `.node` binding is compiled for x86_64. Falls back gracefully to polling. Logs: `dlopen failed: "...00000001.node" is for EM_X86_64 (62) instead of EM_AARCH64 (183)` |
+| `@parcel/watcher` file watcher | None | Declared dependency but not imported by OpenCode's source. The build installs all platform variants (including `linux-arm64`) so nothing depends on the x86_64 prebuilt. |
 | `bun upgrade` | Low | Disabled on Android -- no Android release channel exists upstream |
 | TinyCC FFI compilation | Low | `libtcc.a` is linked but TCC's runtime code generation may not produce valid ARM64 code. FFI is not commonly used by OpenCode. |
 | SIGPWR signals | None | Many SIGPWR signals appear in strace -- related to Android's power management or Bun's signal handling. Not errors. |
@@ -432,7 +443,8 @@ The Bun team [closed Android support as "not planned"](https://github.com/oven-s
 | Android NDK | r28b (28.1.13356709) | Clang 19, stable |
 | Android API level | 24 (Android 7.0+) | Minimum for 64-bit Termux |
 | Zig (for opentui) | 0.15.2 | Latest stable, Android target support |
-| OpenCode | 1.3.13 | Current release |
+| opentui (native lib) | v0.4.5 | Matches `@opentui/core@0.4.5` bundled by OpenCode v1.18.31 |
+| OpenCode | 1.18.31 | Current release |
 | TinyCC | `b91835d8` (oven-sh/tinycc) | Matches Bun v1.2.13's expected TinyCC |
 
 ---
@@ -440,9 +452,10 @@ The Bun team [closed Android support as "not planned"](https://github.com/oven-s
 ## Build Requirements
 
 - **Build host**: x86_64 Linux (Ubuntu 22.04+)
-- **RAM**: 16GB minimum (30GB recommended for WebKit link step)
+- **RAM**: 8GB minimum with an 8GB+ swap file (16GB recommended for faster link steps)
 - **Disk**: 60GB+ free space
-- **CPU**: 8+ cores recommended (4 cores works but slow)
+- **CPU**: 2+ cores (8+ cores recommended; more is faster)
+- The tested configuration: 2-core / 8GB RAM / 8GB swap, `JOBS=2` in the workflow.
 
 ### Required tools
 
@@ -461,10 +474,28 @@ The Bun team [closed Android support as "not planned"](https://github.com/oven-s
 
 ---
 
+## Building and Releasing (CI)
+
+The `.github/workflows/build.yml` workflow has two triggers:
+
+1. **Manual dispatch** (`workflow_dispatch`) -- "Run workflow" button → input `opencode_version` (e.g. `1.18.31`). Builds and uploads packages as a run artifact, but **does not** create a GitHub Release.
+
+2. **Tag push** (`on: push: tags: ['v*']`) -- pushing `git tag v<version>` to the repo triggers a full build AND auto-creates a GitHub Release with the three packages (`.zip`, `.pkg.tar.xz`, `.deb`) attached.
+
+- The workflow is designed for a **self-hosted runner** (`golem10`): `WORK_DIR`, `JOBS`, and the 12-hour timeout are configurable. GitHub-hosted runners are too small/slow for the Bun + WebKit builds.
+- Repo must have **workflow permissions = Read and write** (Settings → Actions → General) or the release step fails with `Resource not accessible by integration`.
+- Upgrading OpenCode = update `OPENCODE_VERSION` / `OPENTUI_VERSION` in `scripts/env.sh` (mirror the pins in `.github/workflows/build.yml` and the fallback in `scripts/build-opencode-android.ts`), then `git tag v<version> && git push --tags`.
+
+---
+
 ## Tested On
 
-- Samsung Galaxy S10e (Android 12, Termux, aarch64) -- full TUI confirmed working
+- Samsung Galaxy S10e (Android 12, Termux, aarch64) -- full TUI confirmed working (verified on an earlier OpenCode release)
 - Meta Quest 2 (Android 12L, adb shell)
+
+> **Note:** The v1.18.31 build is compiled and its bundle pipeline is verified, but it has not been
+> installed/run on an actual Android device yet. If anything misbehaves in the TUI, models list, or
+> startup, please open an issue.
 
 ---
 

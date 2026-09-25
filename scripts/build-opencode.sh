@@ -38,6 +38,22 @@ echo ">>> Installing OpenCode dependencies..."
 cd "$OPENCODE_SRC"
 "$HOST_BUN" install
 
+# Install all platform binary variants so dynamic imports of the native
+# packages resolve during bundling (plain `bun install` only fetches the
+# current host's platform optional deps). Versions are read from the
+# lockfile so they always match what OpenCode bundles.
+LOCKFILE="$OPENCODE_SRC/bun.lock"
+extract_pkg_version() {
+    grep -o '"@'"$1"'@[0-9][^"]*"' "$LOCKFILE" | head -n1 | sed 's/^"@[^@]*@//; s/"$//'
+}
+
+OPENTUI_CORE_VER="$(extract_pkg_version 'opentui/core')"
+PARCEL_WATCHER_VER="$(extract_pkg_version 'parcel/watcher')"
+echo ">>> Installing @opentui/core@${OPENTUI_CORE_VER} for all platforms..."
+"$HOST_BUN" install --os="*" --cpu="*" "@opentui/core@${OPENTUI_CORE_VER}"
+echo ">>> Installing @parcel/watcher@${PARCEL_WATCHER_VER} for all platforms..."
+"$HOST_BUN" install --os="*" --cpu="*" "@parcel/watcher@${PARCEL_WATCHER_VER}"
+
 # Find the Android bun binary
 ANDROID_BUN="$BUN_BUILD/bun"
 if [ ! -f "$ANDROID_BUN" ]; then
