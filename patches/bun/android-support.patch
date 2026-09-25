@@ -887,6 +887,30 @@ index 267d1f8..dcc64b7 100644
          };
  
          _ = string_builder.append(std.mem.asBytes(&offsets));
+@@ -1010,6 +1010,23 @@ fn openSelf() std.fs.OpenSelfExeError!bun.FileDescriptor {
+         switch (Environment.os) {
+             .linux => {
++                // On Termux/Android, executables under the app data dir are launched
++                // via /system/bin/linker64, so /proc/self/exe points at the linker
++                // instead of this binary. That defeats Bun's standalone detection,
++                // which scans the executable for the "---- Bun! ----" trailer.
++                // Prefer the real executable path when the user (BUN_SELF_EXE) or
++                // Termux (TERMUX_EXEC__PROC_SELF_EXE) provides it before falling
++                // back to /proc/self/exe.
++                if (bun.getenvZ("BUN_SELF_EXE")) |self_exe| {
++                    if (std.fs.openFileAbsolute(self_exe, .{})) |fd| {
++                        return .fromStdFile(fd);
++                    } else |_| {}
++                }
++                if (bun.getenvZ("TERMUX_EXEC__PROC_SELF_EXE")) |self_exe| {
++                    if (std.fs.openFileAbsolute(self_exe, .{})) |fd| {
++                        return .fromStdFile(fd);
++                    } else |_| {}
++                }
+                 if (std.fs.openFileAbsoluteZ("/proc/self/exe", .{})) |easymode| {
+                     return .fromStdFile(easymode);
+                 } else |_| {
+                     if (bun.argv.len > 0) {
 diff --git a/src/android_tls_align.c b/src/android_tls_align.c
 new file mode 100644
 index 0000000..f801b82

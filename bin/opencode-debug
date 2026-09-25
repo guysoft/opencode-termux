@@ -1,0 +1,77 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# opencode-debug — debug variant with unstripped symbols for crash analysis
+#
+# Same as the opencode wrapper but executes opencode-debug.bin (built from
+# bun-profile, an unstripped release binary). When this crashes, Zig's panic
+# handler prints file:line stack traces that are actually useful.
+#
+# Use this if opencode crashes with a Zig panic (e.g. "integer does not fit in
+# destination type") to get a symbolised stack trace to report in the issue.
+#
+# Path resolution: same logic as the opencode wrapper.
+
+set -e
+
+dir="$(cd "$(dirname "$0")" && pwd)"
+export ANDROID_ROOT="${ANDROID_ROOT:-/system}"
+export TERMUX_VERSION="${TERMUX_VERSION:-opencode-termux}"
+export TMPDIR="${OPENCODE_TMPDIR:-${HOME:-/data/data/com.termux/files/home}/tmp}"
+export TEMP="$TMPDIR"
+export TMP="$TMPDIR"
+export OPENCODE_DISABLE_TUI_AUDIO="${OPENCODE_DISABLE_TUI_AUDIO:-1}"
+mkdir -p "$TMPDIR" 2>/dev/null || true
+
+# Locate the native libraries we ship alongside the wrapper.
+# In the flat zip layout they sit next to the wrapper; in the Termux package
+# layout they are under ../lib.
+NATIVE_LIB_DIR=""
+# Prefer the installed package layout (libs under ../lib) over the flat zip
+# layout (libs next to the wrapper). This avoids picking up stale libraries
+# that may have been left behind by an earlier manual extraction into bin/.
+for candidate in \
+    "$dir/../lib" \
+    "${PREFIX:-/data/data/com.termux/files/usr}/lib" \
+    "$dir"
+do
+    if [ -f "$candidate/libtagfix.so" ]; then
+        NATIVE_LIB_DIR="$candidate"
+        break
+    fi
+done
+
+if [ -n "$NATIVE_LIB_DIR" ]; then
+    export LD_PRELOAD="${NATIVE_LIB_DIR}/libtagfix.so${LD_PRELOAD:+:$LD_PRELOAD}"
+    # Bun's JIT-compiled modules need libc++_shared.so. Android's /system/lib64/
+    # does not contain it, so point the linker at the directory where we ship it.
+    export LD_LIBRARY_PATH="${NATIVE_LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # Bun's /$bunfs/root/ virtual paths are not intercepted on Android, so load
+    # opentui's renderer library and bun-pty's PTY library from the real filesystem.
+    export OPENTUI_LIB_PATH="${NATIVE_LIB_DIR}/libopentui.so"
+    if [ -f "${NATIVE_LIB_DIR}/librust_pty_arm64.so" ]; then
+        export BUN_PTY_LIB="${NATIVE_LIB_DIR}/librust_pty_arm64.so"
+    fi
+    # @parcel/watcher only bundles the host-arch native binding in our build;
+    # disable it on Android/Termux to avoid a dlopen architecture mismatch.
+    export OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER="${OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER:-true}"
+    # If a real Bun binary is shipped next to opencode, use it for plugin installs.
+    if [ -x "$NATIVE_LIB_DIR/bun" ]; then
+        export OPENCODE_BUN_PATH="$NATIVE_LIB_DIR/bun"
+    fi
+else
+    echo "opencode-debug: warning: native library directory not found, may crash on Android 11+" >&2
+fi
+
+# Locate opencode-debug.bin. Prefer the package layout first so upgrades do not
+# accidentally execute a stale flat-layout binary left in $PREFIX/bin.
+for candidate in \
+    "$dir/../libexec/opencode/opencode-debug.bin" \
+    "${PREFIX:-/data/data/com.termux/files/usr}/libexec/opencode/opencode-debug.bin" \
+    "$dir/opencode-debug.bin"
+do
+    if [ -x "$candidate" ]; then
+        exec "$candidate" "$@"
+    fi
+done
+
+echo "opencode-debug: error: could not find opencode-debug.bin" >&2
+exit 127
