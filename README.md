@@ -89,6 +89,45 @@ opencode
 
 See the [OpenCode docs](https://github.com/anomalyco/opencode) for full configuration options.
 
+## Enhanced Interactive Launcher & Dual Mode
+
+This fork introduces an interactive launcher wrapper tailored specifically for Android/Termux workflows.
+
+If you already have OpenCode installed in Termux, install or upgrade the enhanced launcher with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itswill00/opencode-termux/main/install-wrapper.sh | bash
+```
+
+### Features
+
+- **Interactive Mode Selector**: Running `opencode` without arguments opens a terminal menu navigable with arrow keys (`↑`/`↓`), `j`/`k`, or number keys:
+  ```text
+    OpenCode Launcher
+    Use ↑/↓ or j/k to navigate, Enter to select:
+
+    ❯ 1) CLI (Terminal Interface)
+      2) Web UI (Browser: http://127.0.0.1:4096)
+      3) Dual Mode (CLI + Web UI)
+      4) Stop Service
+      5) View Password [opencode]
+      6) Exit
+  ```
+- **Password Management**: Easily manage Web UI access credentials:
+  - Option 5 in the launcher shows the currently configured password.
+  - `opencode password`          : Check the current password.
+  - `opencode password set <pw>` : Change password and automatically update the running service.
+  - `opencode password reset`    : Reset password to the default (`opencode`).
+- **Dual Mode (CLI + Web UI)**: Automatically manages the background daemon, opens Google Chrome directly to `http://127.0.0.1:4096`, and starts the terminal CLI simultaneously.
+- **Port Locking & Persistent Auth**: Locks the service port to `4096` in `~/.config/opencode/service.json` to prevent random port assignments and invalidating browser sessions on restart.
+- **Service Shortcuts**: Built-in commands to control the background daemon without flags:
+  - `opencode status` : Check whether the daemon is running and view its active URL.
+  - `opencode start`  : Start the background server daemon.
+  - `opencode stop`   : Gracefully stop the background server daemon.
+  - `opencode restart`: Restart the background server daemon.
+- **Direct CLI Bypass**: Passing arguments (e.g. `opencode /path/to/project`, `opencode web`, `opencode --cli`) immediately executes without displaying the menu.
+
+
 ## What This Repo Contains
 
 This repo contains **patch files and build scripts** only -- not the full source trees of Bun or WebKit (which are 1.1GB and 2.7GB respectively). The CI workflow clones upstream repos and applies patches during build.
