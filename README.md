@@ -15,20 +15,77 @@ separate packages and commands, and v2 never overwrites v1 files.
 | OpenCode 1.x | `opencode` | stable | patched Bun 1.2.13 + WebKit/JSC, built from source |
 | OpenCode 2.x | `opencode2` | pre-release | official Bun 1.4.2 android target + OpenTUI 0.5.10 |
 
-Install the v2 pre-release alongside v1:
+### Install the v2 pre-release — one command
+
+The installer picks the newest release for your CPU, verifies its SHA256 against
+the published `SHA256SUMS`, installs it, and applies the TUI crash fix if the
+release predates it:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/guysoft/opencode-termux/main/scripts/install-android.sh | bash
+```
+
+Then run `opencode` (or `opencode2`).
+
+Options: `OPENCODE2_VERSION=v1.0.2` to pin a release, `OPENCODE2_PREFIX=/path` to
+change the install prefix, `OPENCODE2_NO_PATCH=1` to skip the crash-fix step.
+
+### Manual install
+
+<details>
+<summary>Download and install by hand</summary>
+
+```bash
+# pacman package
 curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2-1.0.2-1-aarch64.pkg.tar.xz
 pacman -U opencode2-1.0.2-1-aarch64.pkg.tar.xz
+
+# or deb
+curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2_1.0.2_aarch64.deb
+dpkg -i opencode2_1.0.2_aarch64.deb
+
+# or standalone zip
+curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2-1.0.2-android-aarch64.zip
+unzip opencode2-1.0.2-android-aarch64.zip
+mkdir -p $PREFIX/libexec/opencode2
+cp opencode2      $PREFIX/bin/opencode2
+cp opencode2.bin  $PREFIX/libexec/opencode2/
+cp libopentui.so  $PREFIX/libexec/opencode2/
+chmod +x $PREFIX/bin/opencode2 $PREFIX/libexec/opencode2/opencode2.bin
+ln -sf $PREFIX/bin/opencode2 $PREFIX/bin/opencode
+
+pkg install ripgrep
 opencode2
 ```
 
-See the [v1.0.2 release](https://github.com/guysoft/opencode-termux/releases/tag/v1.0.2) for
-the deb and standalone-zip alternatives.
+Verify the download if you install by hand:
+
+```bash
+curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+</details>
 
 > **Two version numbers.** `opencode2 --version` reports the *OpenCode 2 app* version
 > (e.g. `2.0.0-android-termux.1`). The `v1.0.x` numbers are **this repo's release/package**
 > tags, which track the Android build, not the app.
+
+### If the TUI crashes with "integer does not fit in destination type"
+
+Releases built before
+[`patches/opentui/negative-cell-coord-intcast.patch`](patches/opentui/README.md)
+abort the TUI as soon as a session has enough content to render. Fix an existing
+install without rebuilding:
+
+```bash
+sh scripts/patch-opentui-crash.sh
+```
+
+It backs up `libopentui.so` to `libopentui.so.orig`, patches the eight
+out-of-range coordinate checks so an off-screen cell is clipped instead of
+aborting, verifies the result, and is safe to re-run. Roll back with
+`cp libopentui.so.orig libopentui.so`.
 
 ## Install (Termux)
 
@@ -230,9 +287,27 @@ Bun has zero Android support. Every patch falls into one of these categories:
 
 - **`sigaction()` and `sigprocmask()` bypass Bionic libc** -- Bionic's `struct sigaction` is 32 bytes with 8-byte `sigset_t`, but Zig's `linux.Sigaction` is 152 bytes with 128-byte `sigset_t`. Passing Zig's struct through Bionic's `sigaction()` causes silent memory corruption. The patch makes these functions use raw `rt_sigaction`/`rt_sigprocmask` syscalls on Android, which correctly handle the kernel's struct layout.
 
-### OpenTUI Patch (1 file)
+### OpenTUI Patches (2 files)
 
-- **Link NDK `libc.so` stub** -- On Android, the `.so` must have `NEEDED: libc.so` in its ELF headers so `dlopen()` can resolve symbols like `getauxval`. Zig doesn't bundle Android libc, so we directly add the NDK sysroot's `libc.so` stub as a link input.
+See [`patches/opentui/README.md`](patches/opentui/README.md) for full detail.
+
+- **`v2-0.5.10-android.patch` — link NDK `libc.so` stub.** On Android, the `.so` must have `NEEDED: libc.so` in its ELF headers so `dlopen()` can resolve symbols like `getauxval`. Zig doesn't bundle Android libc, so we directly add the NDK sysroot's `libc.so` stub as a link input.
+
+- **`negative-cell-coord-intcast.patch` — fixes a TUI hard crash (SIGABRT).** Opening a session with enough content to render killed the whole CLI:
+
+  ```
+  thread N panic: integer does not fit in destination type
+  packages/native/src/buffer.zig:925
+    in setVisibleCellWithAlphaBlending
+  ```
+
+  followed by a Bun backtrace of `???` frames and exit 134. A fresh session was fine; the crash needed transcript content and got more likely as the session grew.
+
+  `setVisibleCellWithAlphaBlending` takes cell coordinates as `u32` and narrows them to the `i32` that `isPointInScissor` expects. A `u32` above 2147483647 has no `i32` representation, so the `@intCast` is undefined behaviour — and because the library is built `-Doptimize=ReleaseSafe`, Zig's safety check turns it into `abort()` instead of skipping the cell. Such a coordinate is never a real screen position; it is an off-buffer value that wrapped, typically from signed arithmetic in the layout code being narrowed back to `u32`.
+
+  The fix adds the bounds check its sibling `validateAndIndex` already had, ahead of the narrowing, so an off-buffer coordinate is clipped instead of aborting the process. The emitted code makes the mechanism explicit: each check is a `tbnz wN, #0x1f`, i.e. "value >= 2^31", exactly the condition that makes the narrowing illegal.
+
+  If you already have a build from before this patch, `scripts/patch-opentui-crash.sh` applies the equivalent fix to an installed `libopentui.so` without a rebuild.
 
 ---
 
@@ -278,6 +353,8 @@ We can't use Bun 1.2.13 as host either, because OpenCode's monorepo uses `catalo
 
 | Issue | Severity | Details |
 |-------|----------|---------|
+| TUI aborts on non-empty sessions | **Fixed** | `panic: integer does not fit in destination type` at `buffer.zig:925` killed the CLI (exit 134) as soon as a session had content. Fixed by `patches/opentui/negative-cell-coord-intcast.patch`; existing installs can be fixed with `scripts/patch-opentui-crash.sh`. |
+| Intermittent TUI `SIGSEGV` in the native renderer | Medium | A crash at the base of `.plt` (bad function pointer), seen once in a long interactive session. Unrelated to the coordinate fix and not yet root-caused. Upstream issue. |
 | File watcher native module | Low | `@parcel/watcher` `.node` binding is compiled for x86_64. Falls back gracefully to polling. Logs: `dlopen failed: "...00000001.node" is for EM_X86_64 (62) instead of EM_AARCH64 (183)` |
 | `bun upgrade` | Low | Disabled on Android -- no Android release channel exists upstream |
 | TinyCC FFI compilation | Low | `libtcc.a` is linked but TCC's runtime code generation may not produce valid ARM64 code. FFI is not commonly used by OpenCode. |
@@ -347,8 +424,31 @@ The Bun team [closed Android support as "not planned"](https://github.com/oven-s
 | Patch | Upstreamable? | Notes |
 |-------|:---:|-------|
 | NDK libc.so stub linking for Android | Yes | Clean, conditionally compiled, needed for any Android target |
+| Clip off-buffer coords before `u32` -> `i32` narrowing | **Yes, and urgent** | A real bug on **all** platforms, not Android-specific. Any `u32` coordinate >= 2^31 reaching a ReleaseSafe build aborts the process. See below. |
 
-**Recommendation**: Submit a PR to `anomalyco/opentui`. The patch correctly detects Android targets in `build.zig` and links the NDK's `libc.so` stub only when targeting `aarch64-linux-android`. It's a small, self-contained change that enables Android support without affecting other targets.
+**The coordinate-clipping fix should go upstream first.** It is a genuine
+correctness bug, not a porting problem: `setVisibleCellWithAlphaBlending` narrows
+a `u32` cell coordinate to `i32` for `isPointInScissor`, and any value above
+2147483647 makes the `@intCast` undefined behaviour. In a ReleaseSafe build (the
+default for `zig build`) that means `abort()` — the entire application dies
+instead of one cell being skipped. The sibling function `validateAndIndex`
+already bounds-checks before the same cast, so the fix is a one-line addition
+that makes the two consistent.
+
+It is reachable in normal use, not just in theory: on a phone-sized terminal a
+wrapped coordinate is enough, and the more transcript a session holds, the more
+likely it is to happen. It should be reported to `anomalyco/opentui` regardless
+of Android.
+
+**Also worth reporting**: a separate, intermittent `SIGSEGV` in the same library
+at the base of `.plt` (a bad function-pointer call), seen once in a long-running
+interactive session. It is not caused by the coordinate fix — it was simply
+unreachable before, because the process always aborted first.
+
+**Recommendation**: Submit both patches as separate PRs to `anomalyco/opentui`.
+The coordinate fix is small, self-contained, affects every platform, and fixes a
+crash. The libc.so stub change enables Android support without affecting other
+targets.
 
 ### What will never make it upstream
 

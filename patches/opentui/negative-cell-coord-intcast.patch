@@ -1,0 +1,26 @@
+diff --git a/packages/native/src/buffer.zig b/packages/native/src/buffer.zig
+index 5380ab2..00a97f8 100644
+--- a/packages/native/src/buffer.zig
++++ b/packages/native/src/buffer.zig
+@@ -628,6 +628,8 @@ pub const OptimizedBuffer = struct {
+ 
+     /// Validate coordinates and return buffer index, or null if out of bounds / scissor.
+     fn validateAndIndex(self: *OptimizedBuffer, x: u32, y: u32) ?u32 {
++        // The bounds check above also makes the u32 -> i32 narrowing below safe:
++        // width/height are far below i32 max, so any surviving x/y fits.
+         if (x >= self.width or y >= self.height) return null;
+         if (!self.isPointInScissor(@intCast(x), @intCast(y))) return null;
+         return self.coordsToIndex(x, y);
+@@ -922,6 +924,12 @@ pub const OptimizedBuffer = struct {
+     }
+ 
+     inline fn setVisibleCellWithAlphaBlending(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell, opacity: f32, fully_transparent: bool) void {
++        // Guard the u32 -> i32 narrowing below. Coordinates reach this function as
++        // u32, but @intCast to the i32 used by isPointInScissor is only defined
++        // for values <= i32 max. Any x/y at or above 2^31 is off-buffer and must
++        // be clipped, not passed to @intCast: in a ReleaseSafe build the safety
++        // check aborts the whole process (SIGABRT) instead of trapping.
++        if (x >= self.width or y >= self.height) return;
+         if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
+         if (isFullyOpaque(opacity, cell.fg, cell.bg)) {
+             self.set(x, y, cell);

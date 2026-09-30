@@ -9,6 +9,11 @@ if [ ! -d "$src/.git" ]; then
   git clone --depth 1 --branch "v${OPENTUI_VERSION}" https://github.com/anomalyco/opentui.git "$src"
 fi
 git -C "$src" apply "$REPO_ROOT/patches/opentui/v2-0.5.10-android.patch" 2>/dev/null || true
+# Clip off-buffer cell coordinates before the u32 -> i32 narrowing in
+# setVisibleCellWithAlphaBlending. Without this, a coordinate >= 2^31 trips the
+# ReleaseSafe @intCast check and aborts the whole process (SIGABRT) instead of
+# just skipping the cell. See patches/opentui/README.md.
+git -C "$src" apply "$REPO_ROOT/patches/opentui/negative-cell-coord-intcast.patch"
 
 rm -rf "$BIONIC_SYSROOT_INC"
 mkdir -p "$BIONIC_SYSROOT_INC"
