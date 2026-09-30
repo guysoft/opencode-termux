@@ -15,11 +15,7 @@ separate packages and commands, and v2 never overwrites v1 files.
 | OpenCode 1.x | `opencode` | stable | patched Bun 1.2.13 + WebKit/JSC, built from source |
 | OpenCode 2.x | `opencode2` | pre-release | official Bun 1.4.2 android target + OpenTUI 0.5.10 |
 
-### Install the v2 pre-release — one command
-
-The installer picks the newest release for your CPU, verifies its SHA256 against
-the published `SHA256SUMS`, installs it, and applies the TUI crash fix if the
-release predates it:
+### Install the v2 pre-release
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/guysoft/opencode-termux/main/scripts/install-android.sh | bash
@@ -27,45 +23,12 @@ curl -fsSL https://raw.githubusercontent.com/guysoft/opencode-termux/main/script
 
 Then run `opencode` (or `opencode2`).
 
+The installer picks the newest release for your CPU, verifies its SHA256 against
+the published `SHA256SUMS`, installs it, and applies the TUI crash fix if the
+release predates it.
+
 Options: `OPENCODE2_VERSION=v1.0.2` to pin a release, `OPENCODE2_PREFIX=/path` to
 change the install prefix, `OPENCODE2_NO_PATCH=1` to skip the crash-fix step.
-
-### Manual install
-
-<details>
-<summary>Download and install by hand</summary>
-
-```bash
-# pacman package
-curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2-1.0.2-1-aarch64.pkg.tar.xz
-pacman -U opencode2-1.0.2-1-aarch64.pkg.tar.xz
-
-# or deb
-curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2_1.0.2_aarch64.deb
-dpkg -i opencode2_1.0.2_aarch64.deb
-
-# or standalone zip
-curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2-1.0.2-android-aarch64.zip
-unzip opencode2-1.0.2-android-aarch64.zip
-mkdir -p $PREFIX/libexec/opencode2
-cp opencode2      $PREFIX/bin/opencode2
-cp opencode2.bin  $PREFIX/libexec/opencode2/
-cp libopentui.so  $PREFIX/libexec/opencode2/
-chmod +x $PREFIX/bin/opencode2 $PREFIX/libexec/opencode2/opencode2.bin
-ln -sf $PREFIX/bin/opencode2 $PREFIX/bin/opencode
-
-pkg install ripgrep
-opencode2
-```
-
-Verify the download if you install by hand:
-
-```bash
-curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/SHA256SUMS
-sha256sum -c SHA256SUMS
-```
-
-</details>
 
 > **Two version numbers.** `opencode2 --version` reports the *OpenCode 2 app* version
 > (e.g. `2.0.0-android-termux.1`). The `v1.0.x` numbers are **this repo's release/package**
