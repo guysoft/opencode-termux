@@ -18,9 +18,18 @@ separate packages and commands, and v2 never overwrites v1 files.
 Install the v2 pre-release alongside v1:
 
 ```bash
-curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2-1.0.2-1-aarch64.pkg.tar.xz
-pacman -U opencode2-1.0.2-1-aarch64.pkg.tar.xz
-opencode2
+curl -fsSL https://raw.githubusercontent.com/guysoft/opencode-termux/main/scripts/install-android.sh | bash
+```
+
+Then run `opencode2`. The installer resolves the newest release for your CPU,
+verifies it against the published `SHA256SUMS`, and installs it. Pin a release
+with `OPENCODE2_VERSION=v1.0.2`, or install elsewhere with
+`OPENCODE2_PREFIX=/path`.
+
+To update to a newer release afterwards:
+
+```bash
+opencode2 upgrade
 ```
 
 See the [v1.0.2 release](https://github.com/guysoft/opencode-termux/releases/tag/v1.0.2) for
