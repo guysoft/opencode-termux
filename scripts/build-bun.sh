@@ -146,13 +146,23 @@ ninja -j"$JOBS" 2>&1 || {
 # Verify output
 BUN_BINARY="$BUN_BUILD/bun"
 if [ ! -f "$BUN_BINARY" ]; then
-    # Try bun-profile (unstripped)
-    BUN_BINARY="$BUN_BUILD/bun-profile"
-fi
-
-if [ ! -f "$BUN_BINARY" ]; then
     echo "ERROR: Bun binary not found after build"
     exit 1
+fi
+
+# Also build bun-profile (unstripped release binary).
+# bun-profile keeps DWARF debug symbols so Zig's panic handler can print
+# file:line stack traces — essential for diagnosing the integer-bounds
+# panic on some Snapdragon devices. Shares all compiled objects with the
+# stripped 'bun' target; this step only re-links without stripping.
+echo ""
+echo ">>> Building bun-profile (unstripped, for stack-trace capture)..."
+cd "$BUN_BUILD"
+if ninja -j"$JOBS" bun-profile; then
+    echo "    bun-profile: $(du -h "$BUN_BUILD/bun-profile" | cut -f1)"
+else
+    echo "    WARNING: bun-profile build failed — debug variant will not be available"
+    echo "             (the main 'bun' binary is still good; this is non-fatal)"
 fi
 
 echo ""

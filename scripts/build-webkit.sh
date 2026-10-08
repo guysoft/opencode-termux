@@ -33,6 +33,13 @@ if [ ! -f "$DEPS_PREFIX/lib/libicuuc.a" ]; then
     exit 1
 fi
 
+# Skip rebuild if output already present (persists across runs in WORK_DIR)
+if [ -f "$WEBKIT_OUTPUT/lib/libJavaScriptCore.a" ]; then
+    echo ">>> WebKit output already present at $WEBKIT_OUTPUT, skipping rebuild."
+    echo "    (delete $WEBKIT_OUTPUT/lib/libJavaScriptCore.a to force a rebuild)"
+    exit 0
+fi
+
 # Update toolchain with current paths
 # The toolchain file has hardcoded paths that need to be parameterized
 # We create a temporary toolchain with correct paths
