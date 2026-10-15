@@ -18,16 +18,21 @@ separate packages and commands, and v2 never overwrites v1 files.
 Install the v2 pre-release alongside v1:
 
 ```bash
-curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.2/opencode2-1.0.2-1-aarch64.pkg.tar.xz
-pacman -U opencode2-1.0.2-1-aarch64.pkg.tar.xz
+curl -LO https://github.com/guysoft/opencode-termux/releases/download/v1.0.3/opencode2-1.0.3-1-aarch64.pkg.tar.xz
+pacman -U opencode2-1.0.3-1-aarch64.pkg.tar.xz
 opencode2
 ```
 
-See the [v1.0.2 release](https://github.com/guysoft/opencode-termux/releases/tag/v1.0.2) for
+See the [v1.0.3 release](https://github.com/guysoft/opencode-termux/releases/tag/v1.0.3) for
 the deb and standalone-zip alternatives.
 
+> **Android seccomp fix.** Android's zygote seccomp policy traps `close_range` (and
+> `openat2`/`fchmodat2`/...) with `SECCOMP_RET_TRAP`. Stock Bun dies with `Bad system call`
+> (`SIGSYS`, exit 159). v2 embeds a Bun built with the upstream fix (oven-sh/bun#39775),
+> which turns the trap into `ENOSYS` so Bun's fallbacks run.
+>
 > **Two version numbers.** `opencode2 --version` reports the *OpenCode 2 app* version
-> (e.g. `2.0.0-android-termux.1`). The `v1.0.x` numbers are **this repo's release/package**
+> (e.g. `2.0.0-android-termux.2`). The `v1.0.x` numbers are **this repo's release/package**
 > tags, which track the Android build, not the app.
 
 ## Install (Termux)
@@ -105,6 +110,7 @@ opencode-termux/
     zig/posix-android-sigaction.patch  # Zig stdlib sigaction/sigprocmask fix
     opentui/android-libc-link.patch  # Link NDK libc.so for Android dlopen
     opentui/v2-0.5.10-android.patch  # (v2) OpenTUI android/bionic build fixes
+    bun/android-seccomp-sigsys.patch # (v2) Bun: turn seccomp SIGSYS into ENOSYS (upstream #39775)
   scripts/
     apply-patches.sh               # Clone upstream repos + apply patches
     build-icu.sh                   # Cross-compile ICU 75.1 for Android
@@ -117,7 +123,8 @@ opencode-termux/
     build-opencode-android.ts      # TypeScript helper (module graph extraction)
     env-v2.sh                      # (v2) Environment for the v2 pipeline
     build-opentui-v2.sh            # (v2) Build libopentui.so for Android/bionic
-    build-opencode2-android.sh     # (v2) Build the opencode2 binary
+    build-bun-android.sh           # (v2) Build patched Bun for Android (seccomp fix)
+    build-opencode2-android.sh     # (v2) Build the opencode2 binary (uses patched Bun if present)
     make-packages-v2.sh            # (v2) Create opencode2 zip, pacman, and deb packages
   cmake/
     webkit-android-toolchain.cmake # WebKit CMake cross-compilation toolchain

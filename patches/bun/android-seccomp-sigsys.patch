@@ -1,0 +1,222 @@
+diff --git a/src/jsc/bindings/BunProcess.cpp b/src/jsc/bindings/BunProcess.cpp
+index 57f1b66e..bad2cd27 100644
+--- a/src/jsc/bindings/BunProcess.cpp
++++ b/src/jsc/bindings/BunProcess.cpp
+@@ -1555,8 +1555,17 @@ __attribute__((noinline)) static void forwardSignal(int signalNumber)
+ static int watchModeStickySignal = 0;
+ 
+ #if !OS(WINDOWS)
++#if OS(LINUX)
++// c-bindings.cpp: the seccomp SIGSYS handler forwards kill(2)-sent SIGSYS itself.
++extern "C" bool Bun__forwardSIGSYSToJS(bool enabled);
++#endif
++
+ static void installForwardSignalHandler(int signalNumber)
+ {
++#if OS(LINUX)
++    if (signalNumber == SIGSYS && Bun__forwardSIGSYSToJS(true))
++        return;
++#endif
+     struct sigaction action;
+     memset(&action, 0, sizeof(struct sigaction));
+     action.sa_handler = forwardSignal;
+@@ -1566,6 +1575,18 @@ static void installForwardSignalHandler(int signalNumber)
+     sigaction(signalNumber, &action, nullptr);
+ }
+ 
++static void uninstallForwardSignalHandler(int signalNumber)
++{
++#if OS(LINUX)
++    if (signalNumber == SIGSYS && Bun__forwardSIGSYSToJS(false))
++        return;
++#endif
++    if (void (*oldHandler)(int) = signal(signalNumber, SIG_DFL); oldHandler != forwardSignal) {
++        // Don't uninstall the old handler if it's not the one we installed.
++        signal(signalNumber, oldHandler);
++    }
++}
++
+ extern "C" void Bun__installWatchModeSignalHandler(int signalNumber)
+ {
+     Bun__ensureSignalHandler();
+@@ -1672,10 +1693,7 @@ static void onDidChangeListeners(EventEmitter& eventEmitter, const Identifier& e
+                         // "has JS listeners" source of truth that e.g. self-kill flush consults.
+                         if (signalNumber != watchModeStickySignal) {
+ #if !OS(WINDOWS)
+-                            if (void (*oldHandler)(int) = signal(signalNumber, SIG_DFL); oldHandler != forwardSignal) {
+-                                // Don't uninstall the old handler if it's not the one we installed.
+-                                signal(signalNumber, oldHandler);
+-                            }
++                            uninstallForwardSignalHandler(signalNumber);
+ #else
+                             SignalHandleValue signal_handle = signalToContextIdsMap->get(signalNumber);
+                             Bun__UVSignalHandle__close(signal_handle.handle);
+diff --git a/src/jsc/bindings/bun-spawn.cpp b/src/jsc/bindings/bun-spawn.cpp
+index be91f779..2e309413 100644
+--- a/src/jsc/bindings/bun-spawn.cpp
++++ b/src/jsc/bindings/bun-spawn.cpp
+@@ -247,6 +247,10 @@ extern "C" ssize_t posix_spawn_bun(
+ #endif
+ 
+     sigfillset(&blockall);
++#if OS(LINUX)
++    // A seccomp trap on a blocked SIGSYS is fatal; see installSIGSYSHandler (c-bindings.cpp).
++    sigdelset(&blockall, SIGSYS);
++#endif
+     sigprocmask(SIG_SETMASK, &blockall, &oldmask);
+ #if !OS(ANDROID)
+     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
+@@ -296,6 +300,11 @@ extern "C" ssize_t posix_spawn_bun(
+         struct sigaction sa = { 0 };
+         sa.sa_handler = SIG_DFL;
+         for (int i = 0; i < NSIG; i++) {
++#if OS(LINUX)
++            // close_range() below still needs the ENOSYS handler; reset before execve.
++            if (i == SIGSYS)
++                continue;
++#endif
+             sigaction(i, &sa, 0);
+         }
+ 
+@@ -444,13 +453,17 @@ extern "C" ssize_t posix_spawn_bun(
+         }
+ #endif
+ 
+-        sigprocmask(SIG_SETMASK, &childmask, 0);
+         if (!envp)
+             envp = environ;
+ 
+         // Close all fds > current_max_fd, preferring cloexec if available
+         closeRangeOrLoop(current_max_fd + 1, INT_MAX, true);
+ 
++        // After close_range(): the caller's mask may block SIGSYS. execve keeps the mask.
++        sigprocmask(SIG_SETMASK, &childmask, 0);
++#if OS(LINUX)
++        sigaction(SIGSYS, &sa, 0);
++#endif
+         if (execve(path, argv, envp) == -1) {
+             return childFailed();
+         }
+diff --git a/src/jsc/bindings/c-bindings.cpp b/src/jsc/bindings/c-bindings.cpp
+index 481ccddd..2c1d4df3 100644
+--- a/src/jsc/bindings/c-bindings.cpp
++++ b/src/jsc/bindings/c-bindings.cpp
+@@ -280,6 +280,72 @@ extern "C" ssize_t bun_close_range(unsigned int start, unsigned int end, unsigne
+ {
+     return syscall(__NR_close_range, start, end, flags);
+ }
++
++#if CPU(X86_64) || CPU(ARM64)
++#include <atomic>
++#include <ucontext.h>
++
++#ifndef SYS_SECCOMP
++#define SYS_SECCOMP 1
++#endif
++
++extern "C" void Bun__onPosixSignal(int signalNumber);
++
++static std::atomic<bool> forwardSIGSYSToJS { false };
++
++// A SECCOMP_RET_TRAP policy (Android) reports a blocked syscall with SIGSYS instead of an
++// errno. Turn it into the ENOSYS return that the callers (close_range, pidfd_open, ...) handle.
++static void onSIGSYS(int sig, siginfo_t* info, void* context)
++{
++    if (info->si_code == SYS_SECCOMP && context) {
++        ucontext_t* uc = static_cast<ucontext_t*>(context);
++#if CPU(X86_64)
++        uc->uc_mcontext.gregs[REG_RAX] = -ENOSYS;
++#else
++        uc->uc_mcontext.regs[0] = static_cast<unsigned long long>(-ENOSYS);
++#endif
++        return;
++    }
++
++    // Sent with kill(2).
++    if (forwardSIGSYSToJS.load(std::memory_order_relaxed)) {
++        Bun__onPosixSignal(sig);
++        return;
++    }
++    signal(sig, SIG_DFL);
++    raise(sig);
++}
++
++static void installSIGSYSHandler()
++{
++    struct sigaction sa;
++    memset(&sa, 0, sizeof(sa));
++    sa.sa_sigaction = onSIGSYS;
++    // SA_RESTART matches installForwardSignalHandler for the kill(2) path; a trap skips the syscall.
++    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
++    sigemptyset(&sa.sa_mask);
++    sigaction(SIGSYS, &sa, nullptr);
++}
++
++// BunProcess.cpp routes process.on("SIGSYS") through onSIGSYS instead of replacing it.
++// Returns false on targets without onSIGSYS; the caller then installs its own handler.
++extern "C" bool Bun__forwardSIGSYSToJS(bool enabled)
++{
++    forwardSIGSYSToJS.store(enabled, std::memory_order_relaxed);
++    if (enabled)
++        installSIGSYSHandler();
++    return true;
++}
++#else
++static void installSIGSYSHandler()
++{
++}
++
++extern "C" bool Bun__forwardSIGSYSToJS(bool)
++{
++    return false;
++}
++#endif // CPU(X86_64) || CPU(ARM64)
+ #else // OS(FREEBSD)
+ // FreeBSD 12.2+ libc has close_range; 14.0+ supports CLOSE_RANGE_CLOEXEC
+ // (same value 1<<2 as Linux). Passing flags through means execveZ-failure
+@@ -328,7 +394,7 @@ extern "C" void on_before_reload_process_posix()
+     }
+ 
+     // Reset caught dispositions so a SIGTERM arriving between here and execve isn't queued-then-
+-    // lost. Inherited SIG_IGN is left alone. SIGSEGV/SIGBUS/RT/sigThreadSuspendResume are left
++    // lost. Inherited SIG_IGN is left alone. SIGSEGV/SIGBUS/SIGSYS/RT/sigThreadSuspendResume are left
+     // for execve to reset atomically — resetting them here races JSC's sampler/GC threads fatally.
+     struct sigaction sa {};
+     sa.sa_handler = SIG_DFL;
+@@ -337,7 +403,7 @@ extern "C" void on_before_reload_process_posix()
+         if (s == SIGKILL || s == SIGSTOP || s == SIGSEGV || s == SIGBUS)
+             continue;
+ #if OS(LINUX)
+-        if (s == g_wtfConfig.sigThreadSuspendResume)
++        if (s == g_wtfConfig.sigThreadSuspendResume || s == SIGSYS)
+             continue;
+ #endif
+ #ifdef SIGRTMIN
+@@ -699,6 +765,9 @@ extern "C" void bun_initialize_process()
+     setvbuf(stderr, nullptr, _IONBF, 0);
+ 
+ #if OS(LINUX)
++    // Before bun_close_range: a seccomp policy may trap it.
++    installSIGSYSHandler();
++
+     // Prevent leaking inherited file descriptors on Linux
+     // This is less of an issue for macOS due to posix_spawn
+     // This is best effort, not all linux kernels support close_range or CLOSE_RANGE_CLOEXEC
+@@ -1029,7 +1098,8 @@ extern "C" int64_t Bun__currentSyncPID = 0;
+ static int Bun__pendingSignalToSend = 0;
+ static struct sigaction previous_actions[NSIG];
+ 
+-// npm's signal list minus SIGIOT/SIGPOLL (aliases of SIGABRT/SIGIO; listing both would overwrite previous_actions[N]).
++// npm's signal list minus SIGIOT/SIGPOLL (aliases of SIGABRT/SIGIO; listing both would overwrite previous_actions[N])
++// and minus SIGSYS (synchronous; on Linux owned by installSIGSYSHandler).
+ // https://github.com/npm/cli/blob/fefd509992a05c2dfddbe7bc46931c42f1da69d7/workspaces/arborist/lib/signals.js#L26-L57
+ #define FOR_EACH_POSIX_SIGNAL(M) \
+     M(SIGABRT);                  \
+@@ -1042,7 +1112,6 @@ static struct sigaction previous_actions[NSIG];
+     M(SIGXFSZ);                  \
+     M(SIGUSR2);                  \
+     M(SIGTRAP);                  \
+-    M(SIGSYS);                   \
+     M(SIGQUIT);                  \
+     M(SIGIO);
+ 
