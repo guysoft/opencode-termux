@@ -86,6 +86,150 @@ index b226da7..5afd8c4 100644
      addTranslatedCImports(b, module, optimize, target);
  
      const ghostty_vt_available = ghosttyVtAvailable(target);
+diff --git a/packages/native/src/buffer.zig b/packages/native/src/buffer.zig
+index 5380ab2..ac65455 100644
+--- a/packages/native/src/buffer.zig
++++ b/packages/native/src/buffer.zig
+@@ -323,6 +323,22 @@ pub const OptimizedBuffer = struct {
+             y >= scissor.y and y < scissor.y + @as(i32, @intCast(scissor.height));
+     }
+ 
++    /// Bounds-checked variant for `u32` cell coordinates.
++    ///
++    /// Coordinates reach the native layer through a `u32` C ABI, so a negative
++    /// value from the caller wraps to a huge `u32`. Casting that to `i32` traps
++    /// ("integer does not fit in destination type") and aborts the process, so
++    /// the bounds are checked first and out-of-range points are simply not drawn.
++    pub fn isCellInScissor(self: *const OptimizedBuffer, x: u32, y: u32) bool {
++        if (x >= self.width or y >= self.height) return false;
++        return self.isPointInScissor(@intCast(x), @intCast(y));
++    }
++
++    pub fn isCellRectInScissor(self: *const OptimizedBuffer, x: u32, y: u32, width: u32, height: u32) bool {
++        if (x >= self.width or y >= self.height) return false;
++        return self.isRectInScissor(@intCast(x), @intCast(y), width, height);
++    }
++
+     pub fn isRectInScissor(self: *const OptimizedBuffer, x: i32, y: i32, width: u32, height: u32) bool {
+         const scissor = self.getCurrentScissorRect() orelse return true;
+ 
+@@ -629,7 +645,7 @@ pub const OptimizedBuffer = struct {
+     /// Validate coordinates and return buffer index, or null if out of bounds / scissor.
+     fn validateAndIndex(self: *OptimizedBuffer, x: u32, y: u32) ?u32 {
+         if (x >= self.width or y >= self.height) return null;
+-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return null;
++        if (!self.isCellInScissor(x, y)) return null;
+         return self.coordsToIndex(x, y);
+     }
+ 
+@@ -903,7 +919,7 @@ pub const OptimizedBuffer = struct {
+     }
+ 
+     inline fn setCellWithAlphaBlendingCellWithoutImages(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell) void {
+-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
++        if (!self.isCellInScissor(x, y)) return;
+         const opacity = self.getCurrentOpacity();
+         if (isFullyTransparent(opacity, cell.fg, cell.bg)) return;
+         if (isFullyOpaque(opacity, cell.fg, cell.bg)) {
+@@ -922,7 +938,7 @@ pub const OptimizedBuffer = struct {
+     }
+ 
+     inline fn setVisibleCellWithAlphaBlending(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell, opacity: f32, fully_transparent: bool) void {
+-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
++        if (!self.isCellInScissor(x, y)) return;
+         if (isFullyOpaque(opacity, cell.fg, cell.bg)) {
+             self.set(x, y, cell);
+             return;
+@@ -958,7 +974,7 @@ pub const OptimizedBuffer = struct {
+     }
+ 
+     fn setCellWithAlphaBlendingRawCell(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell) void {
+-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
++        if (!self.isCellInScissor(x, y)) return;
+ 
+         const opacity = self.getCurrentOpacity();
+         if (opacity == 0.0) return;
+@@ -1064,7 +1080,7 @@ pub const OptimizedBuffer = struct {
+         if (self.width == 0 or self.height == 0 or width == 0 or height == 0) return;
+         if (x >= self.width or y >= self.height) return;
+ 
+-        if (!self.isRectInScissor(@intCast(x), @intCast(y), width, height)) return;
++        if (!self.isCellRectInScissor(x, y, width, height)) return;
+ 
+         const opacity = self.getCurrentOpacity();
+         const fully_transparent = isFullyTransparent(opacity, ansi.rgbColor(0, 0, 0, 0), bg);
+@@ -1247,7 +1263,7 @@ pub const OptimizedBuffer = struct {
+         if (grapheme_bytes.len == 0 or cell_width == 0 or x >= self.width or y >= self.height) return;
+         if (x + cell_width > self.width) return;
+         for (0..cell_width) |offset| {
+-            if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
++            if (!self.isCellInScissor(@intCast(x + offset), y)) return;
+         }
+ 
+         const encoded_char: u32 = if (grapheme_bytes.len == 1 and cell_width == 1 and grapheme_bytes[0] >= 32)
+@@ -1330,7 +1346,7 @@ pub const OptimizedBuffer = struct {
+             }
+ 
+             const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
+-            if (!is_tab and !self.isPointInScissor(@intCast(charX), @intCast(y))) {
++            if (!is_tab and !self.isCellInScissor(charX, y)) {
+                 advance_cells += cluster_width_cols;
+                 col += cluster_width_cols;
+                 continue;
+@@ -1357,7 +1373,7 @@ pub const OptimizedBuffer = struct {
+                     continue;
+                 }
+                 for (1..cell_width) |span_offset| {
+-                    if (!self.isPointInScissor(@intCast(charX + @as(u32, @intCast(span_offset))), @intCast(y))) {
++                    if (!self.isCellInScissor(charX + @as(u32, @intCast(span_offset)), y)) {
+                         advance_cells += cluster_width_cols;
+                         col += cluster_width_cols;
+                         continue :text_loop;
+@@ -1370,7 +1386,7 @@ pub const OptimizedBuffer = struct {
+                 while (tab_col < cluster_width_cols) : (tab_col += 1) {
+                     const tab_x = charX + tab_col;
+                     if (tab_x >= self.width) break;
+-                    if (!self.isPointInScissor(@intCast(tab_x), @intCast(y))) continue;
++                    if (!self.isCellInScissor(tab_x, y)) continue;
+ 
+                     const cell = makeCell(DEFAULT_SPACE_CHAR, fg, bgColor, attributes);
+                     if (explicit_colors_opaque) self.set(tab_x, y, cell) else self.setTextCell(tab_x, y, cell);
+@@ -2704,7 +2720,7 @@ pub const OptimizedBuffer = struct {
+         while (y_cell < self.height) : (y_cell += 1) {
+             var x_cell = posX;
+             while (x_cell < self.width) : (x_cell += 1) {
+-                if (!self.isPointInScissor(@intCast(x_cell), @intCast(y_cell))) {
++                if (!self.isCellInScissor(x_cell, y_cell)) {
+                     continue;
+                 }
+ 
+@@ -2765,7 +2781,7 @@ pub const OptimizedBuffer = struct {
+             if (cellX >= terminalWidthCells or cellY >= terminalHeightCells) continue;
+             if (cellX >= self.width or cellY >= self.height) continue;
+ 
+-            if (!self.isPointInScissor(@intCast(cellX), @intCast(cellY))) continue;
++            if (!self.isCellInScissor(cellX, cellY)) continue;
+ 
+             const bgPtr = @as([*]const f32, @ptrCast(@alignCast(data + cellDataOffset)));
+             const bg: RGBA = ansi.rgbaFromFloats(bgPtr[0], bgPtr[1], bgPtr[2], bgPtr[3]);
+@@ -2840,7 +2856,7 @@ pub const OptimizedBuffer = struct {
+                 srcX += 1;
+                 destX += 1;
+             }) {
+-                if (!self.isPointInScissor(@intCast(destX), @intCast(destY))) continue;
++                if (!self.isCellInScissor(destX, destY)) continue;
+ 
+                 const srcIndex = srcY * srcWidth + srcX;
+                 const intensity = intensities[srcIndex];
+@@ -2910,7 +2926,7 @@ pub const OptimizedBuffer = struct {
+                 cellX += 1;
+                 destX += 1;
+             }) {
+-                if (!self.isPointInScissor(@intCast(destX), @intCast(destY))) continue;
++                if (!self.isCellInScissor(destX, destY)) continue;
+ 
+                 const qx = cellX * 2;
+                 const qy = cellY * 2;
 diff --git a/packages/native/src/clipboard/host.zig b/packages/native/src/clipboard/host.zig
 index 6305136..4ede18d 100644
 --- a/packages/native/src/clipboard/host.zig
@@ -107,6 +251,44 @@ index 6305136..4ede18d 100644
      return switch (builtin.os.tag) {
          .linux => switch (pthread_tryjoin_np(thread.getHandle(), null)) {
              0 => true,
+diff --git a/packages/native/src/tests/buffer-methods_test.zig b/packages/native/src/tests/buffer-methods_test.zig
+index 1d6d2fd..af0e7cd 100644
+--- a/packages/native/src/tests/buffer-methods_test.zig
++++ b/packages/native/src/tests/buffer-methods_test.zig
+@@ -1109,3 +1109,33 @@ test "colorMatrixUniform - 3 pixel buffer (simd_end = 0, all scalar)" {
+         try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[i], 0.001);
+     }
+ }
++
++test "setCellWithAlphaBlending - out-of-range u32 coordinates are ignored, not fatal" {
++    // Regression: coordinates arrive through a u32 C ABI, so a negative value
++    // from the caller wraps to a huge u32. The old code did @intCast(u32->i32)
++    // and trapped ("integer does not fit in destination type"), aborting the
++    // process (seen when backgrounding a shell command with Ctrl+B).
++    const pool = gp.initGlobalPool(std.testing.allocator);
++    defer gp.deinitGlobalPool();
++
++    var buf = try OptimizedBuffer.init(
++        std.testing.allocator,
++        4,
++        4,
++        .{ .pool = pool, .id = "test-buffer" },
++    );
++    defer buf.deinit();
++
++    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
++    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
++
++    // negative coordinates as they reach the native layer
++    buf.setCellWithAlphaBlending(0xFFFFFFFF, 0xFFFFFFFF, 'A', fg, bg, 0);
++    buf.setCellWithAlphaBlending(0xFFFFFFFF, 5, 'B', fg, bg, 0);
++    buf.setCellWithAlphaBlending(5, 0xFFFFFFFF, 'C', fg, bg, 0);
++    buf.setCellWithAlphaBlending(999999, 999999, 'D', fg, bg, 0);
++
++    // in-range drawing still works
++    buf.setCellWithAlphaBlending(1, 1, 'E', fg, bg, 0);
++    try std.testing.expectEqual(@as(u32, 'E'), buf.buffer.char[1 * 4 + 1]);
++}
 diff --git a/packages/native/src/android-translate-c-shim.h b/packages/native/src/android-translate-c-shim.h
 new file mode 100644
 index 0000000..1d360e3

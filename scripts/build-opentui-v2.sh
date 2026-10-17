@@ -14,6 +14,11 @@ rm -rf "$BIONIC_SYSROOT_INC"
 mkdir -p "$BIONIC_SYSROOT_INC"
 cp -a "$NDK_SYSROOT/usr/include/." "$BIONIC_SYSROOT_INC/"
 cp -a "$NDK_SYSROOT/usr/include/aarch64-linux-android/." "$BIONIC_SYSROOT_INC/"
+
+# Vendored deps the shim headers reference as "../miniaudio.h" / "../yoga/yoga/Yoga.h"
+mkdir -p "$BIONIC_SYSROOT_INC/yoga"
+cp -a "$src/packages/native/src/vendor/miniaudio/miniaudio.h" "$BIONIC_SYSROOT_INC/miniaudio.h"
+cp -a "$src/packages/native/zig-deps/yoga/yoga" "$BIONIC_SYSROOT_INC/yoga/yoga"
 mkdir -p "$BIONIC_SYSROOT_INC/__opentui"
 cat > "$BIONIC_SYSROOT_INC/__opentui/miniaudio_shimmed.h" <<'EOF'
 #define _Nullable
