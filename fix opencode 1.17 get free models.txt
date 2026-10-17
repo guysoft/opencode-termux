@@ -41,4 +41,4 @@ Honest disclaimer: this only changes the reported version (what the server sees 
 
 If "opencode --version" still says 1.17.9, you're probably running the zip straight from a folder instead of the installed layout. Patch that folder's "opencode.bin" the same way (point "f=" at it).
 
-Tested on: opencode termux v0.2.1 (opencode 1.17.9)
+Tested on: opencode termux (opencode 1.17.9)
