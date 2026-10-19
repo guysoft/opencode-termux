@@ -1,0 +1,44 @@
+v1 stuck on 1.17.9? Spoof the version in place to unlock the free models, no reinstall needed
+
+Heads up: if you're on opencode v1 (1.17.9) from this repo, you might hit a wall accessing the free models. The server checks the client version and considers 1.17.x too old. Upstream already moved on, so this build won't get a real bump anytime soon.
+
+Good news: that version check is just a string baked into the compiled bundle. You can overwrite it in place, no re download, no reinstall. The command below makes two same length edits inside "opencode.bin" (the JS version string + the CLI user agent) and keeps a ".bak" backup just in case.
+
+Option 1: bump to 1.19.0 (minimum that passes the gate)
+
+Paste the whole block into Termux:
+
+f=$PREFIX/libexec/opencode/opencode.bin
+[ -f "$f" ] && echo "patching (backup at $f.bak)..." || { echo "opencode.bin not found, install opencode first"; exit 1; }
+[ -f "$f.bak" ] || cp "$f" "$f.bak"
+LC_ALL=C sed -i -e 's/var n="1\.17\.9"/var n="1.19.0"/' -e 's#--user-agent=opencode/1\.17\.9 #--user-agent=opencode/1.19.0 #' "$f"
+opencode --version
+
+Last line should print "1.19.0", that's it, you're in.
+
+Option 2: max force 1.99.9 (why not)
+
+Already ran Option 1? No problem, this one catches both 1.17.9 and 1.19.0, no rollback needed:
+
+f=$PREFIX/libexec/opencode/opencode.bin
+[ -f "$f" ] && echo "patching (backup at $f.bak)..." || { echo "opencode.bin not found, install opencode first"; exit 1; }
+[ -f "$f.bak" ] || cp "$f" "$f.bak"
+LC_ALL=C sed -i -e 's/var n="1\.17\.9"/var n="1.99.9"/' -e 's/var n="1\.19\.0"/var n="1.99.9"/' -e 's#--user-agent=opencode/1\.\(17\.9\|19\.0\) #--user-agent=opencode/1.99.9 #' "$f"
+opencode --version
+
+Roll back anytime
+
+f=$PREFIX/libexec/opencode/opencode.bin
+cp "$f.bak" "$f" && opencode --version
+
+Notes
+
+Works on existing installs, both the flat zip layout and the installed package layout. Nothing gets re downloaded.
+
+Safe to re run: once patched, the old version string is gone, so running it again is a no op.
+
+Honest disclaimer: this only changes the reported version (what the server sees in your user agent + version string). It does not add real 1.18+ features. It's purely to pass the free model version gate.
+
+If "opencode --version" still says 1.17.9, you're probably running the zip straight from a folder instead of the installed layout. Patch that folder's "opencode.bin" the same way (point "f=" at it).
+
+Tested on: opencode termux (opencode 1.17.9)
